@@ -56,6 +56,39 @@ app.include_router(students_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")
 app.include_router(reports_router, prefix="/api")
 
+# Admin module routers — Phase 1
+from app.api.admin.dashboard import router as admin_dashboard_router
+from app.api.admin.academic import router as admin_academic_router
+from app.api.admin.users import router as admin_users_router
+from app.api.admin.students import router as admin_students_router
+
+app.include_router(admin_dashboard_router, prefix="/api")
+app.include_router(admin_academic_router, prefix="/api")
+app.include_router(admin_users_router, prefix="/api")
+app.include_router(admin_students_router, prefix="/api")
+
+# Admin module routers — Phase 2
+from app.api.admin.attendance import router as admin_attendance_router
+from app.api.admin.exams import router as admin_exams_router
+from app.api.admin.finance import router as admin_finance_router
+from app.api.admin.placements import router as admin_placements_router
+from app.api.admin.notifications import router as admin_notifications_router
+from app.api.admin.audit import router as admin_audit_router
+from app.api.admin.ai_ops import router as admin_ai_ops_router
+from app.api.admin.reports_settings import reports_router as admin_reports_router
+from app.api.admin.reports_settings import settings_router as admin_settings_router
+
+app.include_router(admin_attendance_router, prefix="/api")
+app.include_router(admin_exams_router, prefix="/api")
+app.include_router(admin_finance_router, prefix="/api")
+app.include_router(admin_placements_router, prefix="/api")
+app.include_router(admin_notifications_router, prefix="/api")
+app.include_router(admin_audit_router, prefix="/api")
+app.include_router(admin_ai_ops_router, prefix="/api")
+app.include_router(admin_reports_router, prefix="/api")
+app.include_router(admin_settings_router, prefix="/api")
+
+
 
 @app.get("/health")
 async def health():

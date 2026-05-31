@@ -51,6 +51,11 @@ def require_roles(*roles: UserRole):
 
 
 # Convenience role dependencies
-require_admin = require_roles(UserRole.admin)
-require_admin_or_principal = require_roles(UserRole.admin, UserRole.principal)
-require_admin_principal_hod = require_roles(UserRole.admin, UserRole.principal, UserRole.hod)
+require_admin = require_roles(UserRole.admin, UserRole.college_admin)
+require_admin_or_principal = require_roles(UserRole.admin, UserRole.college_admin, UserRole.principal)
+require_admin_principal_hod = require_roles(UserRole.admin, UserRole.college_admin, UserRole.principal, UserRole.hod)
+
+# Phase 2 alias — used by admin sub-modules
+get_current_college_admin = require_roles(
+    UserRole.admin, UserRole.college_admin, UserRole.principal
+)

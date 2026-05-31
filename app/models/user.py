@@ -6,10 +6,14 @@ from app.database import Base
 
 
 class UserRole(str, enum.Enum):
-    admin = "admin"
+    super_admin = "super_admin"
+    admin = "college_admin"       # maps to college_admin in DB
+    college_admin = "college_admin"
     principal = "principal"
     hod = "hod"
     faculty = "faculty"
+    staff = "staff"
+    student = "student"
 
 
 class User(Base):
@@ -19,7 +23,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), nullable=False, default=UserRole.faculty)
+    role: Mapped[UserRole] = mapped_column(SAEnum(UserRole, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=UserRole.faculty)
     department_id: Mapped[int | None] = mapped_column(nullable=True)  # FK resolved via relationship
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

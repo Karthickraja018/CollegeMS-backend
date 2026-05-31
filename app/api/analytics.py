@@ -73,7 +73,7 @@ async def get_attendance_trend(
             ) AS attendance_pct
         FROM attendance a
         JOIN students s ON s.id = a.student_id
-        WHERE a.date >= NOW() - INTERVAL ':months months'
+        WHERE a.date >= NOW() - (:months * INTERVAL '1 month')
         {dept_filter}
         GROUP BY TO_CHAR(a.date, 'Mon YYYY'), DATE_TRUNC('month', a.date)
         ORDER BY month_order

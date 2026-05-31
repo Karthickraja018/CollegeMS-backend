@@ -17,7 +17,8 @@ class NvidiaProvider(BaseLLMProvider):
         # NVIDIA NIM API requires OpenAI client configured with their base_url
         self._client = AsyncOpenAI(
             api_key=settings.nvidia_api_key or "empty",
-            base_url="https://integrate.api.nvidia.com/v1"
+            base_url="https://integrate.api.nvidia.com/v1",
+            timeout=90.0,
         )
 
     @property
@@ -33,7 +34,7 @@ class NvidiaProvider(BaseLLMProvider):
         messages: list[dict],
         system_prompt: str = "",
         temperature: float = 0.2,
-        max_tokens: int = 8192,
+        max_tokens: int = 1024,
     ) -> str:
         
         formatted_messages = []

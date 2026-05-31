@@ -1,114 +1,364 @@
 """
-Query Agent — translates natural language to SQL, validates, executes, and explains.
+Query Agent V2 — Reasoning-first SQL pipeline.
+
+Pipeline:
+  Question → Intent Understanding → Query Planning → SQL Generation
+  → SQL Validation → Execution → Retry (up to 3x) → Insight Generation → Response
+
+The agent behaves like an experienced data analyst: it plans before it queries,
+validates before it executes, and explains results in plain language.
 """
+from __future__ import annotations
+
 import re
 import json
+from typing import Optional
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.state import AgentState
 from app.llm.provider_factory import get_llm_provider
 from app.utils.sql_validator import validate_sql, SQLValidationError
-from app.prompts import QUERY_SYSTEM_PROMPT
+from app.prompts import (
+    QUERY_SYSTEM_PROMPT_V2,
+    QUERY_PLANNER_PROMPT,
+    INSIGHT_GENERATION_PROMPT,
+)
+
+MAX_RETRIES = 3
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <thinking> / <thought> blocks from model output."""
+    text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
 
 
 def _extract_sql(llm_response: str) -> str:
-    """Extract SQL from LLM response that may contain markdown code blocks."""
+    """
+    Extract SQL from LLM response. Handles:
+    - ```sql ... ``` blocks
+    - ``` ... ``` blocks (no language tag)
+    - Raw SELECT statements
+    """
+    clean = _strip_thinking(llm_response)
+
     # Try ```sql ... ``` first
-    match = re.search(r"```sql\s*(.*?)\s*```", llm_response, re.DOTALL | re.IGNORECASE)
+    match = re.search(r"```sql\s*(.*?)\s*```", clean, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
-    # Try ``` ... ``` (no language tag)
-    match = re.search(r"```\s*(SELECT.*?)\s*```", llm_response, re.DOTALL | re.IGNORECASE)
+
+    # Try ``` ... ``` with SELECT inside
+    match = re.search(r"```\s*(SELECT.*?)\s*```", clean, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
-    # Fall back: try to find a line starting with SELECT
-    for line in llm_response.splitlines():
-        if line.strip().upper().startswith("SELECT"):
-            return line.strip()
-    raise ValueError("Could not extract SQL from LLM response.")
+
+    # Find any SELECT statement (multi-line)
+    match = re.search(r"(SELECT\s+.+?)(?:;|\Z)", clean, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    raise ValueError("Could not extract a valid SQL SELECT statement from the response.")
+
+
+def _extract_plan_steps(plan_text: str) -> list[str]:
+    """Parse numbered plan steps from LLM planning response."""
+    steps = []
+    # Match lines like "Step 1:", "1.", "1)" etc.
+    for line in plan_text.splitlines():
+        line = line.strip()
+        match = re.match(r"^(?:step\s+)?(\d+)[:.)\-]\s+(.+)$", line, re.IGNORECASE)
+        if match:
+            steps.append(match.group(2).strip())
+    return steps if steps else [plan_text[:200]]
+
+
+def _extract_insight_json(text: str) -> Optional[dict]:
+    """Extract JSON insight object from LLM response."""
+    text = re.sub(r"```(?:json)?\s*", "", text)
+    text = re.sub(r"```", "", text)
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+async def _generate_query_plan(
+    llm, query: str, intent: dict
+) -> list[str]:
+    """
+    Step 1: Generate a reasoning plan before writing SQL.
+    Returns a list of step strings.
+    """
+    enriched_query = intent.get("enriched_query", query)
+    entities = intent.get("entities", {})
+    query_type = intent.get("query_type", "descriptive")
+
+    plan_request = (
+        f"Question: \"{enriched_query}\"\n"
+        f"Query type: {query_type}\n"
+        f"Departments involved: {entities.get('departments', [])}\n"
+        f"Metrics needed: {entities.get('metrics', [])}\n"
+        f"Time reference: {entities.get('time', 'none')}\n\n"
+        "Create a numbered execution plan for answering this question."
+    )
+
+    messages = [{"role": "user", "content": plan_request}]
+    try:
+        plan_text = await llm.generate(
+            messages=messages,
+            system_prompt=QUERY_PLANNER_PROMPT,
+            temperature=0.0,
+        )
+        plan_text = _strip_thinking(plan_text)
+        return _extract_plan_steps(plan_text)
+    except Exception:
+        return [f"Retrieve data to answer: {enriched_query}"]
+
+
+async def _generate_sql(
+    llm,
+    query: str,
+    intent: dict,
+    plan: list[str],
+    previous_error: Optional[str] = None,
+) -> str:
+    """
+    Step 2: Generate SQL based on the plan and intent.
+    If previous_error is provided, this is a retry with correction context.
+    """
+    enriched_query = intent.get("enriched_query", query)
+    entities = intent.get("entities", {})
+    plan_str = "\n".join(f"  {i+1}. {step}" for i, step in enumerate(plan))
+
+    correction_note = ""
+    if previous_error:
+        correction_note = (
+            f"\n\nPREVIOUS SQL FAILED with this error:\n{previous_error}\n"
+            "Fix the SQL to resolve this error. Common fixes:\n"
+            "- Add ::numeric cast before ROUND()\n"
+            "- Check table/column names match the schema exactly\n"
+            "- Use NULLIF() for division\n"
+            "- Verify JOIN conditions\n"
+        )
+
+    sql_request = (
+        f"User question: \"{enriched_query}\"\n"
+        f"Query type: {intent.get('query_type', 'descriptive')}\n"
+        f"Departments: {entities.get('departments', [])}\n"
+        f"Metrics needed: {entities.get('metrics', [])}\n"
+        f"Time filter: {entities.get('time', 'none')}\n\n"
+        f"Execution plan:\n{plan_str}\n"
+        f"{correction_note}\n"
+        "Write the SQL query to execute this plan."
+    )
+
+    messages = [{"role": "user", "content": sql_request}]
+    response = await llm.generate(
+        messages=messages,
+        system_prompt=QUERY_SYSTEM_PROMPT_V2,
+        temperature=0.05,
+    )
+    return _extract_sql(response)
+
+
+async def _generate_insights(
+    llm,
+    query: str,
+    data: list[dict],
+    intent: dict,
+) -> dict:
+    """
+    Step 3 (post-execution): Generate insights from the results.
+    Returns {"summary": str, "insights": [...], "recommendations": [...]}
+    """
+    if not data:
+        return {
+            "summary": "No records were found matching your query.",
+            "insights": [],
+            "recommendations": ["Try broadening your search criteria or check if data has been uploaded for this period."],
+        }
+
+    data_preview = data[:60]
+    query_type = intent.get("query_type", "descriptive")
+    entities = intent.get("entities", {})
+
+    insight_request = (
+        f"User asked: \"{query}\"\n"
+        f"Query type: {query_type}\n"
+        f"Departments: {entities.get('departments', [])}\n"
+        f"Results ({len(data)} total rows, showing {len(data_preview)}):\n"
+        f"{json.dumps(data_preview, indent=2, default=str)}\n\n"
+        "Generate insights and summary."
+    )
+
+    messages = [{"role": "user", "content": insight_request}]
+    try:
+        insight_text = await llm.generate(
+            messages=messages,
+            system_prompt=INSIGHT_GENERATION_PROMPT,
+            temperature=0.3,
+        )
+        insight_text = _strip_thinking(insight_text)
+        result = _extract_insight_json(insight_text)
+        if result:
+            return result
+    except Exception:
+        pass
+
+    # Fallback
+    return {
+        "summary": f"Found {len(data)} records matching your query.",
+        "insights": [f"Query returned {len(data)} records."],
+        "recommendations": [],
+    }
+
+
+async def _execute_sql(db: AsyncSession, sql: str) -> tuple[list[dict], Optional[str]]:
+    """
+    Execute SQL and return (results, error_message).
+    Returns (data, None) on success or ([], error_string) on failure.
+    """
+    try:
+        result = await db.execute(text(sql))
+        rows = result.fetchall()
+        columns = list(result.keys())
+        return [dict(zip(columns, row)) for row in rows], None
+    except Exception as e:
+        await db.rollback()
+        return [], str(e)
 
 
 async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
-    """LangGraph node: Query Agent."""
+    """
+    LangGraph node: Query Agent V2.
+    Full reasoning pipeline: plan → SQL → validate → execute → retry → insights.
+    """
     llm = get_llm_provider()
-    query = state["user_query"]
+    query = state.get("user_query", "")
+    intent = state.get("intent", {})
 
-    # Step 1: Generate SQL
-    messages = [{"role": "user", "content": query}]
-    try:
-        llm_response = await llm.generate(
-            messages=messages,
-            system_prompt=QUERY_SYSTEM_PROMPT,
-            temperature=0.1,
-        )
-    except Exception as e:
-        return {
-            "agent_used": "query",
-            "error": f"LLM generation failed: {str(e)}",
-            "final_response": f"I encountered an error generating the query: {str(e)}",
-        }
+    # Use enriched query if semantic layer resolved references
+    effective_query = intent.get("enriched_query", query) or query
 
-    # Step 2: Extract SQL
-    try:
-        raw_sql = _extract_sql(llm_response)
-    except ValueError as e:
-        return {
-            "agent_used": "query",
-            "error": str(e),
-            "final_response": "I could not generate a valid SQL query for your request. Please try rephrasing.",
-        }
+    # ── Step 1: Generate Query Plan ─────────────────────────────────────────
+    plan = await _generate_query_plan(llm, effective_query, intent)
 
-    # Step 3: Validate SQL (SELECT only)
-    try:
-        safe_sql = validate_sql(raw_sql)
-    except SQLValidationError as e:
-        return {
-            "agent_used": "query",
-            "error": str(e),
-            "final_response": "The generated query was rejected for safety reasons. Please try a different question.",
-        }
+    # ── Step 2–4: SQL Generation → Validation → Execution (with retries) ───
+    sql_result: list[dict] = []
+    last_error: Optional[str] = None
+    final_sql: Optional[str] = None
 
-    # Step 4: Execute against DB
-    try:
-        result = await db.execute(text(safe_sql))
-        rows = result.fetchall()
-        columns = list(result.keys())
-        sql_result = [dict(zip(columns, row)) for row in rows]
-    except Exception as e:
-        return {
-            "agent_used": "query",
-            "error": f"Database error: {str(e)}",
-            "final_response": f"The query generated was valid but failed to execute: {str(e)}",
-        }
-
-    # Step 5: Handle explanations and empty results
-    # Remove <thinking> blocks if the model outputs them
-    clean_text = re.sub(r"<thinking>.*?</thinking>", "", llm_response, flags=re.DOTALL | re.IGNORECASE)
-    clean_text = re.sub(r"<thought>.*?</thought>", "", clean_text, flags=re.DOTALL | re.IGNORECASE)
-    
-    explanation = re.sub(r"```sql.*?```", "", clean_text, flags=re.DOTALL).strip()
-    # Remove common prefixes like '### Explanation:'
-    explanation = re.sub(r"^(###\s*)?Explanation:?\s*", "", explanation, flags=re.IGNORECASE).strip()
-    
-    if len(sql_result) == 0:
+    for attempt in range(MAX_RETRIES):
+        # Generate SQL (with error context on retries)
         try:
-            summary_messages = [{"role": "user", "content": f"The user asked: '{query}'. The database query returned 0 results. Tell the user nicely that no matching records were found based on their request."}]
-            explanation = await llm.generate(
-                messages=summary_messages,
-                system_prompt="You are a helpful AI assistant. Keep your response brief, clear, and direct.",
-                temperature=0.3,
+            raw_sql = await _generate_sql(
+                llm,
+                effective_query,
+                intent,
+                plan,
+                previous_error=last_error if attempt > 0 else None,
             )
-            explanation = re.sub(r"<thinking>.*?</thinking>", "", explanation, flags=re.DOTALL | re.IGNORECASE)
-            explanation = re.sub(r"<thought>.*?</thought>", "", explanation, flags=re.DOTALL | re.IGNORECASE).strip()
-        except Exception:
-            explanation = "No records were found matching your query."
-    elif not explanation:
-        explanation = f"Found {len(sql_result)} records matching your query."
+        except ValueError as e:
+            last_error = str(e)
+            if attempt == MAX_RETRIES - 1:
+                return {
+                    "agent_used": "query",
+                    "query_plan": plan,
+                    "sql_result": [],
+                    "insights": [],
+                    "recommendations": [],
+                    "error": str(e),
+                    "final_response": (
+                        "I had difficulty formulating a precise database query for your request. "
+                        "Could you rephrase it with more specific details?"
+                    ),
+                }
+            continue
+        except Exception as e:
+            last_error = f"LLM generation failed: {str(e)}"
+            if attempt == MAX_RETRIES - 1:
+                return {
+                    "agent_used": "query",
+                    "query_plan": plan,
+                    "sql_result": [],
+                    "insights": [],
+                    "recommendations": [],
+                    "error": last_error,
+                    "final_response": f"I encountered an error generating the query: {str(e)}",
+                }
+            continue
+
+        # Validate SQL (SELECT-only safety check)
+        try:
+            safe_sql = validate_sql(raw_sql)
+        except SQLValidationError as e:
+            last_error = f"SQL safety validation failed: {str(e)}"
+            if attempt == MAX_RETRIES - 1:
+                return {
+                    "agent_used": "query",
+                    "query_plan": plan,
+                    "sql_result": [],
+                    "insights": [],
+                    "recommendations": [],
+                    "error": last_error,
+                    "final_response": "The generated query was rejected for safety reasons. Please try a different question.",
+                }
+            continue
+
+        # Execute against DB
+        rows, db_error = await _execute_sql(db, safe_sql)
+
+        if db_error:
+            last_error = f"Database execution error: {db_error}"
+            if attempt == MAX_RETRIES - 1:
+                return {
+                    "agent_used": "query",
+                    "query_plan": plan,
+                    "sql_result": [],
+                    "insights": [],
+                    "recommendations": [],
+                    "error": last_error,
+                    "final_response": (
+                        f"I generated a valid query but it encountered a database error. "
+                        f"Details: {db_error}"
+                    ),
+                }
+            # Loop back with error for LLM to correct
+            continue
+
+        # Success!
+        sql_result = rows
+        final_sql = safe_sql
+        last_error = None
+        break
+
+    # ── Step 5: Generate Insights ────────────────────────────────────────────
+    insight_data = await _generate_insights(llm, effective_query, sql_result, intent)
+
+    summary = insight_data.get("summary", "")
+    insights = insight_data.get("insights", [])
+    recommendations = insight_data.get("recommendations", [])
+
+    # Build the final human-readable response
+    if summary:
+        final_response = summary
+    elif sql_result:
+        final_response = f"Found {len(sql_result)} records matching your query."
+    else:
+        final_response = "No records were found matching your query."
 
     return {
         "agent_used": "query",
+        "query_plan": plan,
         "sql_result": sql_result,
-        "final_response": explanation,
+        "insights": insights,
+        "recommendations": recommendations,
+        "final_response": final_response,
         "error": None,
     }

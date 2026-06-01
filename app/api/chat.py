@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_ai_context
 from app.models.user import User
 from app.agents.supervisor import build_supervisor_graph
 from app.agents.state import AgentState
@@ -58,6 +58,7 @@ async def _event_stream(
     query: str,
     history: list[dict],
     db: AsyncSession,
+    ai_context: dict | None = None,
 ) -> AsyncIterator[str]:
     """
     Run the V2 LangGraph supervisor and stream SSE events.
@@ -73,6 +74,9 @@ async def _event_stream(
             content = msg.get("content", "")
             lc_messages.append((role, content))
         lc_messages.append(("user", query))
+
+        # Role context injected so LLM can respect data access boundaries
+        user_context = ai_context or {}
 
         initial_state: AgentState = {
             "messages": lc_messages,
@@ -92,6 +96,13 @@ async def _event_stream(
             "recommendations": [],
             "error": None,
             "iterations": 0,
+            # Role-scoped context — passed to agents to enforce data access
+            "user_role": user_context.get("user_role", "faculty"),
+            "user_department_id": user_context.get("department_id"),
+            "is_institution_wide": user_context.get("is_institution_wide", False),
+            "student_filter": user_context.get("student_filter", "assigned"),
+            "dept_filter_sql": user_context.get("department_filter_sql", ""),
+            "student_filter_sql": user_context.get("student_filter_sql", ""),
         }
 
         # ── Run the graph and stream progressively ───────────────────────────
@@ -192,11 +203,12 @@ async def _event_stream(
 async def chat_stream(
     body: ChatMessage,
     current_user: User = Depends(get_current_user),
+    ai_context: dict = Depends(get_ai_context),
     db: AsyncSession = Depends(get_db),
 ):
-    """SSE streaming chat endpoint — V2 multi-agent supervisor."""
+    """SSE streaming chat endpoint — V2 multi-agent supervisor with role-scoped context."""
     return StreamingResponse(
-        _event_stream(body.query, body.conversation_history, db),
+        _event_stream(body.query, body.conversation_history, db, ai_context),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

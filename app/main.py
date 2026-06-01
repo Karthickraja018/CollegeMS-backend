@@ -1,5 +1,11 @@
 """
-FastAPI application entry point.
+FastAPI application entry point — Academic Intelligence Platform.
+
+Registered routers:
+  Core:     auth, chat, analytics, students
+  New:      dashboard (role-scoped), student-intelligence, department-intelligence, data-sync
+  Admin:    dashboard, academic, users, students, attendance, exams, ai_ops, reports, settings, import
+  Removed:  finance, placements (deprecated — not an ERP)
 """
 import os
 from contextlib import asynccontextmanager
@@ -10,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.database import engine, Base
 
-# Import all models so Alembic can detect them
+# Import all models so SQLAlchemy can detect them
 import app.models  # noqa: F401
 
 settings = get_settings()
@@ -26,13 +32,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="CollegeMS API",
-    description="AI-Powered College Management System — Single College MVP",
-    version="1.0.0",
+    title="Academic Intelligence Platform API",
+    description="AI-Powered Academic Intelligence Platform — Role-Based, Data-Driven",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-# CORS
+# ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.frontend_url, "http://localhost:3000"],
@@ -41,7 +47,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register routers
+# ── Core Routes ───────────────────────────────────────────────────────────────
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.analytics import router as analytics_router
@@ -56,7 +62,21 @@ app.include_router(students_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")
 app.include_router(reports_router, prefix="/api")
 
-# Admin module routers — Phase 1
+# ── Role-Scoped Dashboard (NEW) ───────────────────────────────────────────────
+from app.api.dashboard import router as dashboard_router
+app.include_router(dashboard_router, prefix="/api")
+
+# ── Intelligence APIs (NEW) ───────────────────────────────────────────────────
+from app.api.student_intelligence import router as student_intel_router
+from app.api.department_intelligence import router as dept_intel_router
+app.include_router(student_intel_router, prefix="/api")
+app.include_router(dept_intel_router, prefix="/api")
+
+# ── Data Sync (NEW) ───────────────────────────────────────────────────────────
+from app.api.data_sync import router as data_sync_router
+app.include_router(data_sync_router, prefix="/api")
+
+# ── Admin Module Routes — Phase 1 ─────────────────────────────────────────────
 from app.api.admin.dashboard import router as admin_dashboard_router
 from app.api.admin.academic import router as admin_academic_router
 from app.api.admin.users import router as admin_users_router
@@ -67,10 +87,10 @@ app.include_router(admin_academic_router, prefix="/api")
 app.include_router(admin_users_router, prefix="/api")
 app.include_router(admin_students_router, prefix="/api")
 
-# Admin module routers — Phase 2
+# ── Admin Module Routes — Phase 2 ─────────────────────────────────────────────
 from app.api.admin.attendance import router as admin_attendance_router
 from app.api.admin.exams import router as admin_exams_router
-from app.api.admin.placements import router as admin_placements_router
+# Finance and Placements removed — not part of Academic Intelligence Platform
 from app.api.admin.notifications import router as admin_notifications_router
 from app.api.admin.audit import router as admin_audit_router
 from app.api.admin.ai_ops import router as admin_ai_ops_router
@@ -79,20 +99,23 @@ from app.api.admin.reports_settings import settings_router as admin_settings_rou
 
 app.include_router(admin_attendance_router, prefix="/api")
 app.include_router(admin_exams_router, prefix="/api")
-app.include_router(admin_placements_router, prefix="/api")
 app.include_router(admin_notifications_router, prefix="/api")
 app.include_router(admin_audit_router, prefix="/api")
 app.include_router(admin_ai_ops_router, prefix="/api")
 app.include_router(admin_reports_router, prefix="/api")
 app.include_router(admin_settings_router, prefix="/api")
 
-# Admin module routers — Phase 4
+# ── Admin Import (Phase 4) ────────────────────────────────────────────────────
 from app.api.admin.import_data import router as admin_import_router
-
 app.include_router(admin_import_router, prefix="/api/admin/import")
 
 
-
+# ── Health Check ──────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "CollegeMS API", "version": "1.0.0"}
+    return {
+        "status": "ok",
+        "service": "Academic Intelligence Platform API",
+        "version": "2.0.0",
+        "roles": ["admin", "principal", "hod", "faculty"],
+    }

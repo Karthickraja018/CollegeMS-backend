@@ -40,7 +40,11 @@ async def _get_dept_ahs(db: AsyncSession, dept_id: int) -> dict:
                 COUNT(*) AS total_students,
                 ROUND(AVG(mr.percentage)::numeric, 1) AS avg_marks
             FROM students s
-            LEFT JOIN attendance_summary att ON att.student_id = s.id
+            LEFT JOIN (
+                SELECT student_id, AVG(attendance_pct) AS attendance_pct
+                FROM attendance_summary
+                GROUP BY student_id
+            ) att ON att.student_id = s.id
             LEFT JOIN marks_records mr ON mr.student_id = s.id AND mr.is_absent = FALSE
             WHERE s.department_id = :dept_id AND s.status = 'active'
         """),
@@ -131,7 +135,11 @@ async def get_department_overview(
                 COUNT(*) FILTER (WHERE s.risk_score >= 60) AS at_risk,
                 COUNT(*) FILTER (WHERE s.risk_score >= 80) AS critical_risk
             FROM students s
-            LEFT JOIN attendance_summary att ON att.student_id = s.id
+            LEFT JOIN (
+                SELECT student_id, AVG(attendance_pct) AS attendance_pct
+                FROM attendance_summary
+                GROUP BY student_id
+            ) att ON att.student_id = s.id
             LEFT JOIN marks_records mr ON mr.student_id = s.id AND mr.is_absent = FALSE
             WHERE s.department_id = :dept_id AND s.status = 'active'
         """),
@@ -237,7 +245,11 @@ async def get_faculty_performance(
             JOIN faculty_subject_assignments fsa ON fsa.faculty_id = u.id
             LEFT JOIN marks_records mr ON mr.subject_id = fsa.subject_id AND mr.is_absent = FALSE
             LEFT JOIN students s ON s.id = mr.student_id AND s.status = 'active'
-            LEFT JOIN attendance_summary att ON att.student_id = s.id
+            LEFT JOIN (
+                SELECT student_id, AVG(attendance_pct) AS attendance_pct
+                FROM attendance_summary
+                GROUP BY student_id
+            ) att ON att.student_id = s.id
             WHERE u.department_id = :dept_id AND u.role IN ('faculty', 'hod') AND u.is_active = TRUE
             GROUP BY u.id, u.full_name
             ORDER BY pass_rate DESC NULLS LAST
@@ -339,7 +351,11 @@ async def compare_departments(
                 COUNT(DISTINCT u.id) AS faculty_count
             FROM departments d
             LEFT JOIN students s ON s.department_id = d.id AND s.status = 'active'
-            LEFT JOIN attendance_summary att ON att.student_id = s.id
+            LEFT JOIN (
+                SELECT student_id, AVG(attendance_pct) AS attendance_pct
+                FROM attendance_summary
+                GROUP BY student_id
+            ) att ON att.student_id = s.id
             LEFT JOIN marks_records mr ON mr.student_id = s.id AND mr.is_absent = FALSE
             LEFT JOIN users u ON u.department_id = d.id AND u.role IN ('faculty', 'hod') AND u.is_active = TRUE
             WHERE d.is_active = TRUE

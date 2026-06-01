@@ -76,7 +76,11 @@ async def get_at_risk_students(
     base_query = f"""
         FROM students s
         JOIN departments d ON d.id = s.department_id
-        LEFT JOIN attendance_summary att ON att.student_id = s.id
+        LEFT JOIN (
+            SELECT student_id, ROUND(AVG(attendance_pct)::numeric, 1) AS attendance_pct
+            FROM attendance_summary
+            GROUP BY student_id
+        ) att ON att.student_id = s.id
         LEFT JOIN (
             SELECT student_id, ROUND(AVG(percentage)::numeric, 1) AS avg_marks
             FROM marks_records WHERE is_absent = FALSE
@@ -330,7 +334,11 @@ async def get_student_recommendations(
                 ROUND(att.attendance_pct::numeric, 1) AS att_pct,
                 ROUND(m.avg_marks::numeric, 1) AS avg_marks
             FROM students s
-            LEFT JOIN attendance_summary att ON att.student_id = s.id
+            LEFT JOIN (
+                SELECT student_id, AVG(attendance_pct) AS attendance_pct
+                FROM attendance_summary
+                GROUP BY student_id
+            ) att ON att.student_id = s.id
             LEFT JOIN (
                 SELECT student_id, AVG(percentage) AS avg_marks
                 FROM marks_records WHERE is_absent = FALSE

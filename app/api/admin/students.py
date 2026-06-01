@@ -86,7 +86,11 @@ async def list_students(
             JOIN departments d ON d.id = s.department_id
             JOIN programs p ON p.id = s.program_id
             LEFT JOIN fee_accounts fa ON fa.student_id = s.id
-            LEFT JOIN attendance_summary att ON att.student_id = s.id
+            LEFT JOIN (
+                SELECT student_id, AVG(attendance_pct) AS attendance_pct
+                FROM attendance_summary
+                GROUP BY student_id
+            ) att ON att.student_id = s.id
             {where}
             GROUP BY s.id, d.name, d.code, p.name, p.code, fa.status, fa.balance
             ORDER BY s.name
@@ -277,7 +281,11 @@ async def get_at_risk_dashboard(
             FROM students s
             JOIN departments d ON d.id = s.department_id
             JOIN programs p ON p.id = s.program_id
-            LEFT JOIN attendance_summary att ON att.student_id = s.id
+            LEFT JOIN (
+                SELECT student_id, AVG(attendance_pct) AS attendance_pct
+                FROM attendance_summary
+                GROUP BY student_id
+            ) att ON att.student_id = s.id
             LEFT JOIN marks_summary ms ON ms.student_id = s.id
             WHERE {risk_where}
             GROUP BY s.id, d.name, p.name

@@ -500,14 +500,18 @@ async def get_department_rankings(
     r = await db.execute(
         text("""
             SELECT
-                d.id, d.name, d.code,
+                d.id AS department_id, d.name AS department_name, d.code,
                 ROUND(AVG(att.attendance_pct)::numeric, 1) AS avg_att,
                 ROUND((COUNT(*) FILTER (WHERE mr.percentage >= 50) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1) AS pass_rate,
                 COUNT(DISTINCT s.id) AS student_count,
                 COUNT(*) FILTER (WHERE s.risk_score >= 60) AS at_risk
             FROM departments d
             LEFT JOIN students s ON s.department_id = d.id AND s.status = 'active'
-            LEFT JOIN attendance_summary att ON att.student_id = s.id
+            LEFT JOIN (
+                SELECT student_id, AVG(attendance_pct) AS attendance_pct
+                FROM attendance_summary
+                GROUP BY student_id
+            ) att ON att.student_id = s.id
             LEFT JOIN marks_records mr ON mr.student_id = s.id AND mr.is_absent = FALSE
             WHERE d.is_active = TRUE
             GROUP BY d.id, d.name, d.code
@@ -516,18 +520,39 @@ async def get_department_rankings(
     )
     rows = r.fetchall()
     cols = list(r.keys())
-    rankings = [dict(zip(cols, row)) for row in rows]
+    raw_rankings = [dict(zip(cols, row)) for row in rows]
 
-    # Add rank and AHS score
-    for i, dept in enumerate(rankings):
+    rankings = []
+    for i, dept in enumerate(raw_rankings):
         total = dept["student_count"] or 1
         risk_ratio = (dept["at_risk"] or 0) / total
         att = float(dept["avg_att"] or 0)
         pass_r = float(dept["pass_rate"] or 0)
-        dept["rank"] = i + 1
-        dept["ahs"] = round(
+        ahs_score = round(
             att * 0.30 + pass_r * 0.30 + ((1 - risk_ratio) * 100) * 0.25 + pass_r * 0.15,
             1
         )
+        ahs_score = min(100.0, max(0.0, ahs_score))
+        
+        if ahs_score >= 85:
+            grade, color = "Excellent", "green"
+        elif ahs_score >= 70:
+            grade, color = "Good", "blue"
+        elif ahs_score >= 55:
+            grade, color = "Needs Attention", "amber"
+        else:
+            grade, color = "Critical", "red"
+
+        rankings.append({
+            "rank": i + 1,
+            "department_id": dept["department_id"],
+            "department_name": dept["department_name"],
+            "ahs_score": ahs_score,
+            "ahs_grade": grade,
+            "ahs_color": color,
+            "attendance_rate": att,
+            "pass_rate": pass_r,
+            "at_risk_count": dept["at_risk"] or 0
+        })
 
     return {"rankings": rankings}

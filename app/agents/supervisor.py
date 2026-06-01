@@ -159,23 +159,6 @@ async def _classify_intent(state: AgentState) -> dict:
     except Exception:
         # Fallback: use semantic layer's heuristic detection
         query_type = enrichment["query_type"]
-        needs_viz = query_type in ("visualization", "trend", "comparative")
-        needs_analytics = query_type in ("comparative", "analytical", "trend", "ranking")
-        needs_performance = query_type == "predictive"
-        needs_report = query_type == "report"
-
-        pipeline: list[str] = []
-        if needs_report:
-            pipeline = ["report"]
-        elif needs_performance:
-            pipeline = ["performance"]
-        else:
-            pipeline = ["query"]
-            if needs_analytics:
-                pipeline.append("analytics")
-            if needs_viz:
-                pipeline.append("visualization")
-
         intent = {
             "query_type": query_type,
             "entities": {
@@ -206,7 +189,7 @@ async def _classify_intent(state: AgentState) -> dict:
         intent["enriched_query"] = enrichment["enriched_query"] or query
 
     # Validate pipeline contains only known agents
-    valid_agents = {"query", "analytics", "visualization", "performance", "report"}
+    valid_agents = {"query", "analytics", "performance", "report"}
     pipeline = [a for a in intent.get("agent_pipeline", ["query"]) if a in valid_agents]
     if not pipeline:
         pipeline = ["query"]
@@ -238,7 +221,7 @@ def _route_from_classify(state: AgentState) -> str:
 
 def _route_after_query(state: AgentState) -> str:
     """
-    After query agent: decide if analytics and/or visualization should follow.
+    After query agent: decide if analytics should follow.
     """
     pipeline = state.get("agent_pipeline", ["query"])
     intent = state.get("intent", {})
@@ -255,35 +238,14 @@ def _route_after_query(state: AgentState) -> str:
     except ValueError:
         next_agent = None
 
-    if next_agent in ("analytics", "visualization"):
+    if next_agent in ("analytics",):
         return next_agent
-
-    # Even if not in pipeline, auto-trigger visualization for trend/compare queries
-    query_type = intent.get("query_type", "")
-    if query_type in ("trend", "comparative") and sql_result:
-        return "visualization"
 
     return END
 
 
 def _route_after_analytics(state: AgentState) -> str:
-    """After analytics: go to visualization if needed, else END."""
-    pipeline = state.get("agent_pipeline", [])
-    intent = state.get("intent", {})
-    sql_result = state.get("sql_result", [])
-
-    try:
-        analytics_idx = pipeline.index("analytics")
-        next_agent = pipeline[analytics_idx + 1] if analytics_idx + 1 < len(pipeline) else None
-    except ValueError:
-        next_agent = None
-
-    if next_agent == "visualization" and sql_result:
-        return "visualization"
-
-    if intent.get("needs_visualization") and sql_result:
-        return "visualization"
-
+    """After analytics: END."""
     return END
 
 
@@ -296,7 +258,6 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
     from app.agents.query_agent import query_agent_node
     from app.agents.analytics_agent import analytics_agent_node
     from app.agents.performance_agent import performance_agent_node
-    from app.agents.visualization_agent import visualization_agent_node
     from app.agents.report_agent import report_agent_node
 
     # Bind DB session to agents that need it
@@ -310,7 +271,6 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
     graph.add_node("classify", _classify_intent)
     graph.add_node("query", query_node)
     graph.add_node("analytics", analytics_agent_node)
-    graph.add_node("visualization", visualization_agent_node)
     graph.add_node("performance", performance_node)
     graph.add_node("report", report_node)
 
@@ -324,35 +284,31 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
         {
             "query": "query",
             "analytics": "analytics",
-            "visualization": "query",  # visualization needs data — always go through query first
             "performance": "performance",
             "report": "report",
         },
     )
 
-    # query → analytics | visualization | END
+    # query → analytics | END
     graph.add_conditional_edges(
         "query",
         _route_after_query,
         {
             "analytics": "analytics",
-            "visualization": "visualization",
             END: END,
         },
     )
 
-    # analytics → visualization | END
+    # analytics → END
     graph.add_conditional_edges(
         "analytics",
         _route_after_analytics,
         {
-            "visualization": "visualization",
             END: END,
         },
     )
 
     # Terminal nodes
-    graph.add_edge("visualization", END)
     graph.add_edge("performance", END)
     graph.add_edge("report", END)
 

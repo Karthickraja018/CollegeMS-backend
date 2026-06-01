@@ -155,6 +155,15 @@ async def _event_stream(
 
         # ── Emit: chart spec ─────────────────────────────────────────────────
         chart_spec = result.get("chart_spec")
+        if not chart_spec and result.get("sql_result") and result.get("intent", {}).get("needs_visualization", False):
+            from app.services.visualization_service import build_chart_spec
+            chart_spec = build_chart_spec(result["sql_result"], query, result["intent"])
+            # Update insights if chart generated new ones
+            if chart_spec and chart_spec.get("insight") and chart_spec["insight"] not in insights:
+                insights.append(chart_spec["insight"])
+                yield f"data: {safe_json_dumps({'type': 'insights', 'data': insights})}\n\n"
+                await asyncio.sleep(0.01)
+
         if chart_spec:
             yield f"data: {safe_json_dumps({'type': 'chart', 'spec': chart_spec})}\n\n"
             await asyncio.sleep(0.01)

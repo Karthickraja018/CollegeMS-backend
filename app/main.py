@@ -70,7 +70,6 @@ app.include_router(admin_students_router, prefix="/api")
 # Admin module routers — Phase 2
 from app.api.admin.attendance import router as admin_attendance_router
 from app.api.admin.exams import router as admin_exams_router
-from app.api.admin.finance import router as admin_finance_router
 from app.api.admin.placements import router as admin_placements_router
 from app.api.admin.notifications import router as admin_notifications_router
 from app.api.admin.audit import router as admin_audit_router
@@ -80,7 +79,6 @@ from app.api.admin.reports_settings import settings_router as admin_settings_rou
 
 app.include_router(admin_attendance_router, prefix="/api")
 app.include_router(admin_exams_router, prefix="/api")
-app.include_router(admin_finance_router, prefix="/api")
 app.include_router(admin_placements_router, prefix="/api")
 app.include_router(admin_notifications_router, prefix="/api")
 app.include_router(admin_audit_router, prefix="/api")

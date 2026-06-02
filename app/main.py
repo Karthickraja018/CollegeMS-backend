@@ -105,9 +105,6 @@ app.include_router(admin_ai_ops_router, prefix="/api")
 app.include_router(admin_reports_router, prefix="/api")
 app.include_router(admin_settings_router, prefix="/api")
 
-# ── Admin Import (Phase 4) ────────────────────────────────────────────────────
-from app.api.admin.import_data import router as admin_import_router
-app.include_router(admin_import_router, prefix="/api/admin/import")
 
 
 # ── Health Check ──────────────────────────────────────────────────────────────

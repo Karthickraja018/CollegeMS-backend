@@ -1,5 +1,10 @@
 """
 FastAPI dependency for authentication and role-based access control.
+
+Extended with:
+- Role-specific convenience dependencies for all 4 roles
+- DataScope injection for row-level filtering
+- AI context dependency for the chat endpoint
 """
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -50,12 +55,36 @@ def require_roles(*roles: UserRole):
     return check_role
 
 
-# Convenience role dependencies
+# ── Convenience role dependencies ─────────────────────────────────────────────
+
 require_admin = require_roles(UserRole.admin, UserRole.college_admin)
 require_admin_or_principal = require_roles(UserRole.admin, UserRole.college_admin, UserRole.principal)
 require_admin_principal_hod = require_roles(UserRole.admin, UserRole.college_admin, UserRole.principal, UserRole.hod)
+require_principal = require_roles(UserRole.principal, UserRole.admin, UserRole.college_admin)
+require_hod = require_roles(UserRole.hod, UserRole.admin, UserRole.college_admin)
+require_faculty = require_roles(UserRole.faculty, UserRole.hod, UserRole.admin, UserRole.college_admin)
 
 # Phase 2 alias — used by admin sub-modules
 get_current_college_admin = require_roles(
     UserRole.admin, UserRole.college_admin, UserRole.principal
 )
+
+
+# ── DataScope dependency ───────────────────────────────────────────────────────
+
+async def get_data_scope(current_user: User = Depends(get_current_user)):
+    """
+    Inject the resolved DataScope for the current user.
+    Use this in analytics/intelligence endpoints for row-level filtering.
+    """
+    from app.roles import get_data_scope as _get_data_scope
+    return _get_data_scope(current_user)
+
+
+async def get_ai_context(current_user: User = Depends(get_current_user)):
+    """
+    Inject the AI context dict for the current user.
+    Passed into AgentState so the LLM respects data scope.
+    """
+    from app.roles import get_ai_context_for_role
+    return get_ai_context_for_role(current_user)

@@ -25,8 +25,11 @@ def get_llm_provider() -> BaseLLMProvider:
     elif provider == "nvidia":
         from app.llm.nvidia_provider import NvidiaProvider
         return NvidiaProvider()
+    elif provider == "groq":
+        from app.llm.groq_provider import GroqProvider
+        return GroqProvider()
     else:
         raise ValueError(
             f"Unknown LLM provider: '{provider}'. "
-            "Set LLM_PROVIDER to one of: gemini, openai, claude"
+            "Set LLM_PROVIDER to one of: gemini, openai, claude, groq"
         )

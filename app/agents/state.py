@@ -1,6 +1,7 @@
 """
 Shared LangGraph state for all agents in the supervisor graph.
 V2: Adds intent, query planning, analytics, memory, and structured response.
+V2.1: Adds role-scoped context for row-level access control.
 """
 from typing import Annotated, TypedDict, Optional
 from langgraph.graph import add_messages
@@ -18,39 +19,25 @@ class AgentState(TypedDict):
     memory_context: dict
 
     # ── Structured intent from supervisor ──────────────────────────────────
-    # {
-    #   "query_type": "descriptive|comparative|trend|ranking|analytical|predictive|report|visualization",
-    #   "entities": {"departments": [], "metrics": [], "time": "", "students": []},
-    #   "needs_visualization": bool,
-    #   "needs_report": bool,
-    #   "needs_analytics": bool,
-    #   "agent_pipeline": ["query", "analytics", "visualization"],
-    #   "complexity": "simple|multi_step",
-    #   "enriched_query": str   # query after semantic resolution
-    # }
     intent: dict
 
     # ── Query plan (created by Query Agent before SQL generation) ──────────
-    # ["Step 1: Get attendance for CSE", "Step 2: Get attendance for ECE", ...]
     query_plan: list[str]
 
     # ── Which agents were invoked this turn ────────────────────────────────
-    agent_used: str          # Primary agent label for UI badge
-    agent_pipeline: list[str]  # All agents used in this turn
+    agent_used: str
+    agent_pipeline: list[str]
 
     # ── Structured results from agents ─────────────────────────────────────
-    sql_result: list[dict]           # Raw tabular data from Query Agent
-    analytics_result: Optional[dict] # KPIs, comparisons, trends from Analytics Agent
-    chart_spec: Optional[dict]       # Recharts-compatible JSON from Visualization Agent
-    report_url: Optional[str]        # Download URL from Report Agent
-    risk_analysis: Optional[dict]    # At-risk data from Performance Agent
+    sql_result: list[dict]
+    analytics_result: Optional[dict]
+    chart_spec: Optional[dict]
+    report_url: Optional[str]
+    risk_analysis: Optional[dict]
 
     # ── Composed response fields ────────────────────────────────────────────
-    # Final narrative response for the user
     final_response: str
-    # AI-generated bullet insights (e.g., ["CSE has 12% lower attendance than ECE"])
     insights: list[str]
-    # Actionable recommendations (e.g., ["Schedule intervention for 14 at-risk students"])
     recommendations: list[str]
 
     # ── Error state ─────────────────────────────────────────────────────────
@@ -58,3 +45,20 @@ class AgentState(TypedDict):
 
     # ── Loop guard ──────────────────────────────────────────────────────────
     iterations: int
+
+    # ── Role-Scoped Context (V2.1) ───────────────────────────────────────────
+    # These fields are injected by the chat endpoint from the authenticated user.
+    # All agents MUST append these SQL clauses to their queries.
+    #
+    # user_role: "admin" | "college_admin" | "principal" | "hod" | "faculty"
+    # user_department_id: department ID for HOD/faculty, None for admin/principal
+    # is_institution_wide: True if user can see all departments
+    # student_filter: "all" | "department" | "assigned"
+    # dept_filter_sql: SQL fragment like "AND s.department_id = 3"
+    # student_filter_sql: SQL fragment for faculty-scoped student filtering
+    user_role: Optional[str]
+    user_department_id: Optional[int]
+    is_institution_wide: Optional[bool]
+    student_filter: Optional[str]
+    dept_filter_sql: Optional[str]
+    student_filter_sql: Optional[str]

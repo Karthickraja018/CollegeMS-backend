@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_ai_context
 from app.models.user import User
 from app.agents.supervisor import build_supervisor_graph
 from app.agents.state import AgentState
@@ -57,15 +57,15 @@ class ChatMessage(BaseModel):
 async def _event_stream(
     query: str,
     history: list[dict],
-    db: AsyncSession,
+    user_context: dict = None,
 ) -> AsyncIterator[str]:
     """
     Run the V2 LangGraph supervisor and stream SSE events.
-    The full graph runs to completion, then we stream results back.
+    The database connection is closed immediately after the graph runs to free up pool resources.
     """
     try:
-        graph = build_supervisor_graph(db)
-
+        from app.database import AsyncSessionLocal
+        
         # Convert conversation history to LangGraph message format
         lc_messages = []
         for msg in history[-10:]:  # Limit context window to last 10 turns
@@ -73,6 +73,9 @@ async def _event_stream(
             content = msg.get("content", "")
             lc_messages.append((role, content))
         lc_messages.append(("user", query))
+
+        # Role context injected so LLM can respect data access boundaries
+        user_context = user_context or {}
 
         initial_state: AgentState = {
             "messages": lc_messages,
@@ -92,84 +95,91 @@ async def _event_stream(
             "recommendations": [],
             "error": None,
             "iterations": 0,
+            # Role-scoped context — passed to agents to enforce data access
+            "user_role": user_context.get("user_role", "faculty"),
+            "user_department_id": user_context.get("department_id"),
+            "is_institution_wide": user_context.get("is_institution_wide", False),
+            "student_filter": user_context.get("student_filter", "assigned"),
+            "dept_filter_sql": user_context.get("department_filter_sql", ""),
+            "student_filter_sql": user_context.get("student_filter_sql", ""),
         }
 
-        # ── Run the graph and stream progressively ───────────────────────────
         current_state = initial_state
-        async for output in graph.astream(initial_state):
-            # output is a dict like {'node_name': node_state}
-            for node_name, state in output.items():
-                current_state = state
-                
-                # After intent classification, we know which agent is selected
-                if node_name == "classify":
-                    agent_used = state.get("agent_used", "query")
-                    pipeline = state.get("agent_pipeline", [agent_used])
-                    yield f"data: {safe_json_dumps({'type': 'agent', 'agent': agent_used, 'pipeline': pipeline})}\n\n"
-                    await asyncio.sleep(0.01)
 
-        # After the graph finishes, we extract final results from current_state
+        # Run the entire Graph within the DB session context
+        async with AsyncSessionLocal() as db:
+            graph = build_supervisor_graph(db)
+            async for output in graph.astream(initial_state):
+                for node_name, state in output.items():
+                    current_state = state
+                    if node_name == "classify":
+                        agent_used = state.get("agent_used", "query")
+                        pipeline = state.get("agent_pipeline", [agent_used])
+                        yield f"data: {safe_json_dumps({'type': 'agent', 'agent': agent_used, 'pipeline': pipeline})}\n\n"
+
+        # The DB session is now closed! The connection is returned to the pool.
         result = current_state
 
         # ── Emit: query plan ─────────────────────────────────────────────────
         query_plan = result.get("query_plan", [])
         if query_plan:
             yield f"data: {safe_json_dumps({'type': 'query_plan', 'steps': query_plan})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: final response (streamed token by token) ───────────────────
         final_response = result.get("final_response", "")
         if final_response:
             words = final_response.split(" ")
-            chunk_size = 4
+            chunk_size = 8  # Larger chunk size for faster delivery
             for i in range(0, len(words), chunk_size):
                 chunk = " ".join(words[i: i + chunk_size])
                 if i + chunk_size < len(words):
                     chunk += " "
                 yield f"data: {safe_json_dumps({'type': 'token', 'content': chunk})}\n\n"
-                await asyncio.sleep(0.018)
+                await asyncio.sleep(0.005)  # Negligible sleep for fast fluid appearance
 
         # ── Emit: insights ───────────────────────────────────────────────────
         insights = result.get("insights", [])
         if insights:
             yield f"data: {safe_json_dumps({'type': 'insights', 'data': insights})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: recommendations ────────────────────────────────────────────
         recommendations = result.get("recommendations", [])
         if recommendations:
             yield f"data: {safe_json_dumps({'type': 'recommendations', 'data': recommendations})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: table data ─────────────────────────────────────────────────
         sql_result = result.get("sql_result", [])
         if isinstance(sql_result, list) and sql_result:
             yield f"data: {safe_json_dumps({'type': 'table', 'data': sql_result[:100]})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: analytics result ───────────────────────────────────────────
         analytics_result = result.get("analytics_result")
         if analytics_result:
             yield f"data: {safe_json_dumps({'type': 'analytics', 'data': analytics_result})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: chart spec ─────────────────────────────────────────────────
         chart_spec = result.get("chart_spec")
+        if not chart_spec and result.get("sql_result") and result.get("intent", {}).get("needs_visualization", False):
+            from app.services.visualization_service import build_chart_spec
+            chart_spec = build_chart_spec(result["sql_result"], query, result["intent"])
+            # Update insights if chart generated new ones
+            if chart_spec and chart_spec.get("insight") and chart_spec["insight"] not in insights:
+                insights.append(chart_spec["insight"])
+                yield f"data: {safe_json_dumps({'type': 'insights', 'data': insights})}\n\n"
+                await asyncio.sleep(0.01)
+
         if chart_spec:
             yield f"data: {safe_json_dumps({'type': 'chart', 'spec': chart_spec})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: report URL ─────────────────────────────────────────────────
         report_url = result.get("report_url")
         if report_url:
             yield f"data: {safe_json_dumps({'type': 'report', 'url': report_url})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: risk analysis ──────────────────────────────────────────────
         risk_analysis = result.get("risk_analysis")
         if risk_analysis:
             yield f"data: {safe_json_dumps({'type': 'risk', 'data': risk_analysis})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: done ───────────────────────────────────────────────────────
         yield f"data: {safe_json_dumps({'type': 'done'})}\n\n"
@@ -183,11 +193,11 @@ async def _event_stream(
 async def chat_stream(
     body: ChatMessage,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    ai_context: dict = Depends(get_ai_context),
 ):
-    """SSE streaming chat endpoint — V2 multi-agent supervisor."""
+    """SSE streaming chat endpoint — V2 multi-agent supervisor with role-scoped context."""
     return StreamingResponse(
-        _event_stream(body.query, body.conversation_history, db),
+        _event_stream(body.query, body.conversation_history, ai_context),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

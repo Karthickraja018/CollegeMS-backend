@@ -68,13 +68,17 @@ class GeminiEmbeddingProvider(EmbeddingProviderBase):
     Native 768-dim output — no normalization needed.
     """
 
-    DEFAULT_MODEL = "models/text-embedding-004"
+    DEFAULT_MODEL = "models/gemini-embedding-2"
 
     def __init__(self, api_key: str, model: str = ""):
         import google.generativeai as genai
         genai.configure(api_key=api_key)
         self._genai = genai
-        self._model = model or self.DEFAULT_MODEL
+        
+        raw_model = model or self.DEFAULT_MODEL
+        if not raw_model.startswith("models/") and not raw_model.startswith("tunedModels/"):
+            raw_model = f"models/{raw_model}"
+        self._model = raw_model
 
     @property
     def provider_name(self) -> str:
@@ -91,7 +95,7 @@ class GeminiEmbeddingProvider(EmbeddingProviderBase):
             content=text,
             task_type="retrieval_document",
         )
-        return result["embedding"]
+        return self._normalize_to_768(result["embedding"])
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Gemini supports batch embedding natively."""
@@ -104,9 +108,9 @@ class GeminiEmbeddingProvider(EmbeddingProviderBase):
         embeddings = result["embedding"]
         # Gemini returns list of lists for batch
         if isinstance(embeddings[0], list):
-            return embeddings
+            return [self._normalize_to_768(vec) for vec in embeddings]
         # Single text returns flat list — wrap it
-        return [embeddings]
+        return [self._normalize_to_768(embeddings)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

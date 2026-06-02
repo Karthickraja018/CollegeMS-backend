@@ -16,7 +16,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.permissions import require_role
+from app.api.deps import require_roles
+from app.models.user import UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/intelligence", tags=["Intelligence Layer"])
 @router.get("/status")
 async def get_intelligence_status(
     db: AsyncSession = Depends(get_db),
-    _user=Depends(require_role(["admin", "college_admin", "principal"])),
+    _user=Depends(require_roles(UserRole.admin, UserRole.college_admin, UserRole.principal)),
 ):
     """
     Return health status of the Agent Intelligence Layer.
@@ -45,7 +46,7 @@ async def get_intelligence_status(
 async def seed_knowledge_store(
     force: bool = Query(default=False, description="Force re-seed even if data exists"),
     db: AsyncSession = Depends(get_db),
-    _user=Depends(require_role(["admin", "college_admin"])),
+    _user=Depends(require_roles(UserRole.admin, UserRole.college_admin)),
 ):
     """
     Manually trigger knowledge store seeding.
@@ -67,7 +68,7 @@ async def seed_knowledge_store(
 @router.post("/re-embed")
 async def regenerate_embeddings(
     db: AsyncSession = Depends(get_db),
-    _user=Depends(require_role(["admin", "college_admin"])),
+    _user=Depends(require_roles(UserRole.admin, UserRole.college_admin)),
 ):
     """
     Regenerate all vector embeddings for entities, terminology, and query examples.
@@ -93,7 +94,7 @@ async def debug_semantic_search(
     q: str = Query(..., description="Question to search for"),
     agent_type: str = Query(default="query", description="Agent type for config lookup"),
     db: AsyncSession = Depends(get_db),
-    _user=Depends(require_role(["admin", "college_admin", "principal"])),
+    _user=Depends(require_roles(UserRole.admin, UserRole.college_admin, UserRole.principal)),
 ):
     """
     Debug endpoint: perform a semantic search and return the full context.
@@ -122,7 +123,7 @@ async def debug_semantic_search(
 
 @router.get("/provider")
 async def get_embedding_provider_info(
-    _user=Depends(require_role(["admin", "college_admin"])),
+    _user=Depends(require_roles(UserRole.admin, UserRole.college_admin)),
 ):
     """Return the currently configured embedding provider info."""
     from app.intelligence.embedding_service import get_embedding_service
@@ -134,3 +135,41 @@ async def get_embedding_provider_info(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/data-dictionary")
+async def get_data_dictionary(
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_roles(UserRole.admin, UserRole.college_admin, UserRole.principal, UserRole.faculty, UserRole.student)),
+):
+    """
+    Phase 13: Data Dictionary
+    Returns all entities, metrics, terminology, and relationships
+    in a human-readable format.
+    """
+    from sqlalchemy import text
+    try:
+        # Fetch entities
+        entities_result = await db.execute(text("SELECT id, entity_name, description, primary_table, attributes, business_rules FROM semantic_entities WHERE is_active = TRUE"))
+        entities = [dict(row._mapping) for row in entities_result.fetchall()]
+        
+        # Fetch metrics
+        metrics_result = await db.execute(text("SELECT id, metric_name, description, formula, entity_name, aggregation_type, unit FROM semantic_metrics"))
+        metrics = [dict(row._mapping) for row in metrics_result.fetchall()]
+        
+        # Fetch terminology
+        terms_result = await db.execute(text("SELECT id, term, full_form, definition, category FROM academic_terminology WHERE is_active = TRUE"))
+        terminology = [dict(row._mapping) for row in terms_result.fetchall()]
+        
+        # Fetch relationships
+        rels_result = await db.execute(text("SELECT id, from_entity, relationship, to_entity, description FROM semantic_relationships"))
+        relationships = [dict(row._mapping) for row in rels_result.fetchall()]
+
+        return {
+            "entities": entities,
+            "metrics": metrics,
+            "terminology": terminology,
+            "relationships": relationships
+        }
+    except Exception as e:
+        logger.error(f"Failed to fetch data dictionary: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch data dictionary")

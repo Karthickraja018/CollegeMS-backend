@@ -65,6 +65,27 @@ class AgentContextBus:
                 agent_type=agent_type,
             )
             context = self._assembler.assemble(retrieval, agent_type=agent_type)
+            
+            # Phase 3: Add Context Packs (avoid rebuilding context)
+            if retrieval.entities:
+                top_entities = [e.entity_name for e in retrieval.entities[:3]]
+                packs_result = await db.execute(text(
+                    "SELECT context_json FROM context_packs WHERE entity_name = ANY(CAST(:names AS text[]))"
+                ), {"names": top_entities})
+                
+                for row in packs_result.fetchall():
+                    pack = row.context_json
+                    if isinstance(pack, dict):
+                        # Merge pack data
+                        if "entities" in pack:
+                            context["entities"].extend(pack["entities"])
+                        if "metrics" in pack:
+                            context["metrics"].extend(pack["metrics"])
+                        if "join_paths" in pack:
+                            context["join_paths"].extend(pack["join_paths"])
+                            
+                        # Remove duplicates (simple approach)
+                        # We could do more complex deduplication here if needed
             elapsed = (time.monotonic() - t0) * 1000
             context["meta"]["total_ms"] = round(elapsed, 1)
             logger.info(
@@ -174,7 +195,7 @@ class AgentContextBus:
                          exec_time_ms, source)
                     VALUES
                         (:q, :sql, :summary,
-                         :entities::jsonb, :metrics::jsonb, :tables::jsonb,
+                         CAST(:entities AS jsonb), CAST(:metrics AS jsonb), CAST(:tables AS jsonb),
                          :agent, :qtype, 0.8, TRUE,
                          :ms, 'runtime')
                     ON CONFLICT DO NOTHING

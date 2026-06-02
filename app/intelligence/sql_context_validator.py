@@ -88,11 +88,12 @@ class SQLContextValidator:
         unknown = tables_in_sql - KNOWN_TABLES - self.RESTRICTED_TABLES
         if unknown:
             result.unknown_tables = list(unknown)
-            result.warnings.append(
+            result.valid = False
+            result.errors.append(
                 f"SQL references unrecognized table(s): {unknown}. "
-                "These may be hallucinated. Verify against the known schema."
+                "These are hallucinated. Use ONLY tables from the provided schema context. "
+                "For example, use attendance_records instead of attendance."
             )
-            # Unknown tables are warnings, not errors (could be valid aliases/CTEs)
 
         # ── Check 3: Context alignment (do retrieved entities match tables?) ─
         context_tables: set[str] = {

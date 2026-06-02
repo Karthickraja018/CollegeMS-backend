@@ -11,8 +11,7 @@ Seeds:
 
 Call KnowledgeSeeder.seed_if_empty(db) on app startup.
 """
-from __future__ import annotations
-
+import enum
 import logging
 from typing import Any
 
@@ -20,6 +19,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+class KnowledgeSourceStrategy(str, enum.Enum):
+    SEED = "SEED"
+    SEMANTIC_LAYER = "SEMANTIC_LAYER"
+    HYBRID = "HYBRID"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -626,18 +630,31 @@ class KnowledgeSeeder:
     """
 
     @classmethod
-    async def seed_if_empty(cls, db: AsyncSession) -> bool:
+    async def seed_if_empty(
+        cls, 
+        db: AsyncSession, 
+        strategy: KnowledgeSourceStrategy = KnowledgeSourceStrategy.HYBRID
+    ) -> bool:
         """
-        Check if knowledge store is empty; if so, seed it.
+        Check if knowledge store is empty; if so, seed it based on strategy.
         Returns True if seeding was performed.
         """
+        if strategy == KnowledgeSourceStrategy.SEMANTIC_LAYER:
+            logger.info("Strategy is SEMANTIC_LAYER — skipping seed data entirely")
+            return False
+            
         result = await db.execute(text("SELECT COUNT(*) FROM semantic_entities"))
         count = result.scalar()
+        
         if count and count > 0:
-            logger.info(f"Knowledge store already has {count} entities — skipping seed")
-            return False
+            if strategy == KnowledgeSourceStrategy.HYBRID:
+                logger.info(f"Knowledge store already has {count} entities — skipping seed (HYBRID prefers existing semantic data)")
+                return False
+            elif strategy == KnowledgeSourceStrategy.SEED:
+                logger.info("Knowledge store has data, but strategy is SEED — re-seeding to ensure base knowledge")
+                # Fall through to seed_all
 
-        logger.info("Knowledge store is empty — seeding now...")
+        logger.info("Knowledge store requires seeding — running seed_all now...")
         await cls.seed_all(db)
         return True
 
@@ -673,7 +690,7 @@ class KnowledgeSeeder:
                              aliases, attributes, business_rules, display_name)
                         VALUES
                             (:name, :desc, :table, :key,
-                             :aliases::jsonb, :attrs::jsonb, :rules::jsonb, :display)
+                             CAST(:aliases AS jsonb), CAST(:attrs AS jsonb), CAST(:rules AS jsonb), :display)
                         ON CONFLICT (entity_name) DO UPDATE
                           SET description    = EXCLUDED.description,
                               aliases        = EXCLUDED.aliases,
@@ -741,7 +758,7 @@ class KnowledgeSeeder:
                              db_mapping, db_table, aliases, usage_examples)
                         VALUES
                             (:term, :full_form, :def, :cat,
-                             :db_mapping, :db_table, :aliases::jsonb, :usage::jsonb)
+                             :db_mapping, :db_table, CAST(:aliases AS jsonb), CAST(:usage AS jsonb))
                         ON CONFLICT (term) DO UPDATE
                           SET definition    = EXCLUDED.definition,
                               db_mapping    = EXCLUDED.db_mapping,
@@ -779,7 +796,7 @@ class KnowledgeSeeder:
                              agent_used, query_type, feedback_score, success, source)
                         VALUES
                             (:question, :sql, :summary,
-                             :entities::jsonb, :metrics::jsonb, :tables::jsonb,
+                             CAST(:entities AS jsonb), CAST(:metrics AS jsonb), CAST(:tables AS jsonb),
                              :agent, :qtype, :score, TRUE, 'system')
                         ON CONFLICT DO NOTHING
                         RETURNING id

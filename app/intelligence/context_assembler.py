@@ -58,7 +58,8 @@ class ContextAssembler:
                 "queries_found": len(retrieval.query_examples),
                 "agent_type": agent_type,
                 "question": retrieval.question,
-            }
+            },
+            "metrics": []
         }
 
         # ── Entities ──────────────────────────────────────────────────────
@@ -101,6 +102,17 @@ class ContextAssembler:
                 "tables_used": qe.tables_used,
                 "query_type": qe.query_type,
                 "similarity": round(qe.similarity, 3),
+            })
+            
+        # ── Metrics ───────────────────────────────────────────────────────
+        for metric in getattr(retrieval, "metrics", []):
+            context["metrics"].append({
+                "name": metric.metric_name,
+                "description": metric.description,
+                "formula": metric.formula,
+                "entity": metric.entity_name,
+                "type": metric.aggregation_type,
+                "unit": metric.unit,
             })
 
         # ── Business Rules (deduplicated from all entities) ────────────────
@@ -180,6 +192,13 @@ class ContextAssembler:
                     f"Tables used: {', '.join(qe['tables_used'])}\n"
                     f"SQL:\n{qe['sql']}"
                 )
+
+        # Metrics
+        if context.get("metrics"):
+            parts.append("\n=== SEMANTIC METRICS ===")
+            for m in context["metrics"][:5]:
+                unit_str = f" ({m['unit']})" if m.get('unit') else ""
+                parts.append(f"• {m['name']}{unit_str}: {m['formula']} - {m['description']}")
 
         if not parts:
             return "No semantic context retrieved. Use general academic database knowledge."

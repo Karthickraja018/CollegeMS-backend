@@ -14,6 +14,7 @@ Architecture:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from functools import partial
 
@@ -23,6 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.state import AgentState
 from app.agents.semantic_layer import semantic_layer
 from app.intelligence.agent_context_bus import get_context_bus
+
+logger = logging.getLogger(__name__)
 from app.llm.provider_factory import get_llm_provider
 from app.prompts import SUPERVISOR_PROMPT_V2
 
@@ -157,9 +160,11 @@ async def _classify_intent(state: AgentState) -> dict:
             temperature=0.0,
         )
         intent = _extract_intent_json(response)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Intent classification LLM failed: {e}")
         # Fallback: use semantic layer's heuristic detection
         query_type = enrichment["query_type"]
+        pipeline = ["query"]
         intent = {
             "query_type": query_type,
             "entities": {
@@ -169,14 +174,14 @@ async def _classify_intent(state: AgentState) -> dict:
                 "students": [],
                 "subjects": [],
             },
-            "needs_visualization": needs_viz,
-            "needs_report": needs_report,
-            "needs_analytics": needs_analytics,
-            "needs_performance": needs_performance,
+            "needs_visualization": False,
+            "needs_report": False,
+            "needs_analytics": False,
+            "needs_performance": False,
             "agent_pipeline": pipeline,
-            "complexity": "multi_step" if len(pipeline) > 1 else "simple",
+            "complexity": "simple",
             "enriched_query": enrichment["enriched_query"],
-            "primary_agent": pipeline[0] if pipeline else "query",
+            "primary_agent": "query",
         }
 
     # Merge semantic layer findings into intent entities

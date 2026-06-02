@@ -13,7 +13,23 @@ from __future__ import annotations
 import re
 import json
 import time
+import logging
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+class QueryAgentFallbackLLM:
+    def __init__(self, primary, fallback):
+        self.primary = primary
+        self.fallback = fallback
+
+    async def generate(self, *args, **kwargs):
+        try:
+            return await self.primary.generate(*args, **kwargs)
+        except Exception as e:
+            logger.warning(f"Query Agent Primary LLM failed: {e}. Switching to fallback.")
+            return await self.fallback.generate(*args, **kwargs)
+
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -254,7 +270,10 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
     Full reasoning pipeline: plan → SQL → validate → execute → retry → insights.
     Uses Agent Intelligence Layer context from state if available.
     """
-    llm = get_llm_provider()
+    primary_llm = get_llm_provider("groq")
+    fallback_llm = get_llm_provider("nvidia")
+    llm = QueryAgentFallbackLLM(primary_llm, fallback_llm)
+
     query = state.get("user_query", "")
     intent = state.get("intent", {})
     intelligence_context = state.get("intelligence_context") or {}

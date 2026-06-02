@@ -8,10 +8,10 @@ from app.config import get_settings
 
 
 @lru_cache
-def get_llm_provider() -> BaseLLMProvider:
+def get_llm_provider(provider_override: str = None) -> BaseLLMProvider:
     """Return the configured LLM provider instance (singleton via lru_cache)."""
     settings = get_settings()
-    provider = settings.llm_provider.lower()
+    provider = (provider_override or settings.llm_provider).lower()
 
     if provider == "gemini":
         from app.llm.gemini_provider import GeminiProvider

@@ -25,10 +25,10 @@ departments
 subjects
   id, code, name, semester (1-8), department_id, credits
 
-attendance
+attendance_records
   id, student_id, subject_id, date, status ('present'|'absent'|'late')
 
-marks
+marks_records
   id, student_id, subject_id, semester (1-8), exam_type
   exam_type: 'internal1' | 'internal2' | 'internal3' | 'semester_end' | 'assignment' | 'practical'
   marks_obtained (numeric), max_marks (numeric)
@@ -38,6 +38,18 @@ users
 
 reports
   id, title, report_type, format, created_at, generated_by_id
+
+fee_accounts
+  id, student_id, category, total_amount, paid_amount, balance, status
+
+fee_transactions
+  id, fee_account_id, amount, payment_mode, payment_date
+
+placement_drives
+  id, company_name, drive_date, ctc_lpa
+
+placement_applications
+  id, student_id, drive_id, status
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Key formulas:

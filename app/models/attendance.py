@@ -1,27 +1,35 @@
 import enum
-from datetime import date
-from sqlalchemy import String, ForeignKey, Date, Enum as SAEnum
+from datetime import datetime
+from sqlalchemy import String, Integer, DateTime, Date, func, ForeignKey, SmallInteger, Enum as SAEnum, Text, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
-
 class AttendanceStatus(str, enum.Enum):
-    present = "present"
-    absent = "absent"
-    late = "late"
+    present = 'present'
+    absent = 'absent'
+    od = 'od'
+    medical_leave = 'medical_leave'
+    duty_leave = 'duty_leave'
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .student import Student
+    from .subject import Subject
 
 
-class Attendance(Base):
-    __tablename__ = "attendance"
+class AttendanceRecord(Base):
+    __tablename__ = "attendance_records"
 
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), nullable=False, index=True)
-    subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id"), nullable=False, index=True)
-    date: Mapped[date] = mapped_column(Date, nullable=False)
-    status: Mapped[AttendanceStatus] = mapped_column(
-        SAEnum(AttendanceStatus), nullable=False, default=AttendanceStatus.present
-    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
+    subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False)
+    semester_id: Mapped[int] = mapped_column(ForeignKey("semesters.id"), nullable=False)
+    marked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    date: Mapped[datetime] = mapped_column(Date, nullable=False)
+    period: Mapped[int] = mapped_column(SmallInteger, default=1, nullable=False)
+    status: Mapped[AttendanceStatus] = mapped_column(SAEnum(AttendanceStatus), default=AttendanceStatus.present, nullable=False)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    # Relationships
-    student: Mapped["Student"] = relationship(back_populates="attendance_records")  # type: ignore[name-defined]
-    subject: Mapped["Subject"] = relationship(back_populates="attendance_records")  # type: ignore[name-defined]
+    student: Mapped["Student"] = relationship(back_populates="attendance_records")
+    subject: Mapped["Subject"] = relationship(back_populates="attendance_records")

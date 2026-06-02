@@ -28,7 +28,7 @@ async def get_dashboard_stats(
     r = await db.execute(text("""
         SELECT ROUND(
             (COUNT(CASE WHEN status = 'present' THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1
-        ) FROM attendance
+        ) FROM attendance_records
     """))
     stats["avg_attendance"] = float(r.scalar() or 0)
 
@@ -44,7 +44,7 @@ async def get_dashboard_stats(
     r = await db.execute(text("""
         SELECT ROUND(
             (COUNT(CASE WHEN marks_obtained * 100.0 / NULLIF(max_marks, 0) >= 40 THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1
-        ) FROM marks
+        ) FROM marks_records
     """))
     stats["pass_percentage"] = float(r.scalar() or 0)
 
@@ -71,7 +71,7 @@ async def get_attendance_trend(
             ROUND(
                 (COUNT(CASE WHEN a.status = 'present' THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1
             ) AS attendance_pct
-        FROM attendance a
+        FROM attendance_records a
         JOIN students s ON s.id = a.student_id
         WHERE a.date >= NOW() - (:months * INTERVAL '1 month')
         {dept_filter}
@@ -106,8 +106,8 @@ async def get_department_performance(
             ) AS avg_marks_pct
         FROM departments d
         LEFT JOIN students s ON s.department_id = d.id
-        LEFT JOIN attendance a ON a.student_id = s.id
-        LEFT JOIN marks m ON m.student_id = s.id
+        LEFT JOIN attendance_records a ON a.student_id = s.id
+        LEFT JOIN marks_records m ON m.student_id = s.id
         GROUP BY d.name, d.code
         ORDER BY d.name
     """)
@@ -149,7 +149,7 @@ async def get_subject_pass_rates(
             ) AS pass_rate
         FROM subjects sub
         JOIN departments d ON d.id = sub.department_id
-        LEFT JOIN marks m ON m.subject_id = sub.id
+        LEFT JOIN marks_records m ON m.subject_id = sub.id
         {where}
         GROUP BY sub.name, sub.code, sub.semester, d.name
         ORDER BY pass_rate ASC

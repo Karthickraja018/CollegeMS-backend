@@ -1,6 +1,6 @@
 tables:
-  departments:
-    description: "College departments listing."
+  colleges:
+    description: "Registered colleges on the platform."
     columns:
       id:
         type: int
@@ -16,6 +16,85 @@ tables:
         nullable: false
         lookup: true
         lookup_limit: 20
+  departments:
+    description: "College departments listing."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      college_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "colleges.id"
+      name:
+        type: varchar
+        pk: false
+        nullable: false
+      code:
+        type: varchar
+        pk: false
+        nullable: false
+        lookup: true
+        lookup_limit: 20
+  programs:
+    description: "Academic programs like B.E, MBA, etc."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      department_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "departments.id"
+      name:
+        type: varchar
+        pk: false
+        nullable: false
+      code:
+        type: varchar
+        pk: false
+        nullable: false
+        lookup: true
+        lookup_limit: 20
+      type:
+        type: enum
+        pk: false
+        nullable: false
+        enum_values:
+          - ug
+          - pg
+          - diploma
+          - certificate
+          - phd
+  semesters:
+    description: "Academic semesters."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      program_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "programs.id"
+      semester_number:
+        type: int
+        pk: false
+        nullable: false
+      status:
+        type: enum
+        pk: false
+        nullable: false
+        enum_values:
+          - upcoming
+          - ongoing
+          - completed
+          - results_published
   users:
     description: "System accounts for admins, principals, HODs, and faculty."
     columns:
@@ -23,6 +102,11 @@ tables:
         type: int
         pk: true
         nullable: false
+      college_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "colleges.id"
       email:
         type: varchar
         pk: false
@@ -37,9 +121,12 @@ tables:
         nullable: false
         enum_values:
           - admin
+          - college_admin
           - principal
           - hod
           - faculty
+          - staff
+          - student
       department_id:
         type: int
         pk: false
@@ -56,6 +143,11 @@ tables:
         type: int
         pk: true
         nullable: false
+      college_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "colleges.id"
       roll_number:
         type: varchar
         pk: false
@@ -75,7 +167,12 @@ tables:
         pk: false
         nullable: false
         fk: "departments.id"
-      semester:
+      program_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "programs.id"
+      current_semester:
         type: int
         pk: false
         nullable: false
@@ -87,6 +184,20 @@ tables:
         type: varchar
         pk: false
         nullable: true
+      status:
+        type: enum
+        pk: false
+        nullable: false
+        enum_values:
+          - active
+          - inactive
+          - detained
+          - arrear
+          - lateral_entry
+          - transferred_in
+          - transferred_out
+          - passed_out
+          - discontinued
       risk_score:
         type: float
         pk: false
@@ -98,6 +209,16 @@ tables:
         type: int
         pk: true
         nullable: false
+      department_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "departments.id"
+      program_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "programs.id"
       code:
         type: varchar
         pk: false
@@ -108,12 +229,7 @@ tables:
         type: varchar
         pk: false
         nullable: false
-      department_id:
-        type: int
-        pk: false
-        nullable: false
-        fk: "departments.id"
-      semester:
+      semester_number:
         type: int
         pk: false
         nullable: false
@@ -121,7 +237,7 @@ tables:
         type: int
         pk: false
         nullable: false
-  attendance:
+  attendance_records:
     description: "Student daily attendance logs."
     columns:
       id:
@@ -138,6 +254,11 @@ tables:
         pk: false
         nullable: false
         fk: "subjects.id"
+      semester_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "semesters.id"
       date:
         type: date
         pk: false
@@ -149,7 +270,10 @@ tables:
         enum_values:
           - present
           - absent
-  marks:
+          - od
+          - medical_leave
+          - duty_leave
+  marks_records:
     description: "Academic exam marks achievements."
     columns:
       id:
@@ -166,26 +290,128 @@ tables:
         pk: false
         nullable: false
         fk: "subjects.id"
-      semester:
+      semester_id:
         type: int
         pk: false
         nullable: false
+        fk: "semesters.id"
       exam_type:
         type: enum
         pk: false
         nullable: false
         enum_values:
-          - internal1
-          - internal2
-          - internal3
+          - cia1
+          - cia2
+          - cia3
+          - model
           - semester_end
           - practical
+          - viva
           - assignment
+          - quiz
+          - project_review
       marks_obtained:
         type: float
         pk: false
         nullable: false
       max_marks:
         type: float
+        pk: false
+        nullable: false
+
+  fee_accounts:
+    description: "Student fee accounts and balances."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      student_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "students.id"
+      category:
+        type: varchar
+        pk: false
+        nullable: false
+      total_amount:
+        type: float
+        pk: false
+        nullable: false
+      paid_amount:
+        type: float
+        pk: false
+        nullable: false
+      balance:
+        type: float
+        pk: false
+        nullable: false
+      status:
+        type: varchar
+        pk: false
+        nullable: false
+  fee_transactions:
+    description: "Payments made towards fee accounts."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      fee_account_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "fee_accounts.id"
+      amount:
+        type: float
+        pk: false
+        nullable: false
+      payment_mode:
+        type: varchar
+        pk: false
+        nullable: false
+      payment_date:
+        type: date
+        pk: false
+        nullable: false
+  placement_drives:
+    description: "Placement drives conducted by companies."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      company_name:
+        type: varchar
+        pk: false
+        nullable: false
+      drive_date:
+        type: date
+        pk: false
+        nullable: false
+      ctc_lpa:
+        type: float
+        pk: false
+        nullable: true
+  placement_applications:
+    description: "Student applications to placement drives."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      student_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "students.id"
+      drive_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "placement_drives.id"
+      status:
+        type: varchar
         pk: false
         nullable: false

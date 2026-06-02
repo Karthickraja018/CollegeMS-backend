@@ -35,6 +35,20 @@ class Settings(BaseSettings):
     # Reports
     reports_dir: str = "./reports"
 
+    # ── Agent Intelligence Layer ───────────────────────────────────────
+    # EMBEDDING_PROVIDER: gemini | groq | openai | nvidia
+    embedding_provider: str = "gemini"
+    # Override model name; leave blank to use provider default
+    embedding_model: str = ""
+    # Groq-specific embedding model
+    groq_embedding_model: str = "nomic-embed-text"
+    # Top-K results to retrieve per search type
+    intelligence_top_k: int = 10
+    # Minimum cosine similarity score for retrieval
+    intelligence_score_threshold: float = 0.60
+    # Context cache TTL in seconds
+    intelligence_cache_ttl: int = 300
+
 
 @lru_cache
 def get_settings() -> Settings:

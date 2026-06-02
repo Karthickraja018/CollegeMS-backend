@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.state import AgentState
 from app.agents.semantic_layer import semantic_layer
+from app.intelligence.agent_context_bus import get_context_bus
 from app.llm.provider_factory import get_llm_provider
 from app.prompts import SUPERVISOR_PROMPT_V2
 
@@ -199,6 +200,27 @@ async def _classify_intent(state: AgentState) -> dict:
     if primary not in valid_agents:
         primary = pipeline[0]
 
+    # ── Intelligence Context Retrieval ──────────────────────────────────
+    # Retrieve semantic context BEFORE routing to agents.
+    # All downstream agents will reuse this context from state.
+    intelligence_context: dict = {}
+    context_retrieval_ms: float = 0.0
+    try:
+        bus = get_context_bus()
+        db = state.get("_db")  # injected by build_supervisor_graph
+        if db is not None:
+            intelligence_context = await bus.get_context(
+                question=query,
+                db=db,
+                agent_type="supervisor",
+            )
+            context_retrieval_ms = intelligence_context.get("meta", {}).get("total_ms", 0.0)
+    except Exception as intel_exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Intelligence context retrieval failed (non-fatal): {intel_exc}"
+        )
+
     return {
         "intent": intent,
         "memory_context": memory_context,
@@ -208,6 +230,8 @@ async def _classify_intent(state: AgentState) -> dict:
         "insights": [],
         "recommendations": [],
         "query_plan": [],
+        "intelligence_context": intelligence_context,
+        "context_retrieval_ms": context_retrieval_ms,
     }
 
 
@@ -260,6 +284,10 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
     from app.agents.performance_agent import performance_agent_node
     from app.agents.report_agent import report_agent_node
 
+    # Inject db session into the classify node so it can retrieve intelligence context
+    async def _classify_with_db(state: AgentState) -> dict:
+        return await _classify_intent({**state, "_db": db})
+
     # Bind DB session to agents that need it
     query_node = partial(query_agent_node, db=db)
     performance_node = partial(performance_agent_node, db=db)
@@ -268,7 +296,7 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
     graph = StateGraph(AgentState)
 
     # ── Nodes ───────────────────────────────────────────────────────────────
-    graph.add_node("classify", _classify_intent)
+    graph.add_node("classify", _classify_with_db)
     graph.add_node("query", query_node)
     graph.add_node("analytics", analytics_agent_node)
     graph.add_node("performance", performance_node)

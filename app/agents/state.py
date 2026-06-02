@@ -2,6 +2,7 @@
 Shared LangGraph state for all agents in the supervisor graph.
 V2: Adds intent, query planning, analytics, memory, and structured response.
 V2.1: Adds role-scoped context for row-level access control.
+V3: Adds intelligence_context from Agent Intelligence Layer.
 """
 from typing import Annotated, TypedDict, Optional
 from langgraph.graph import add_messages
@@ -45,6 +46,15 @@ class AgentState(TypedDict):
 
     # ── Loop guard ──────────────────────────────────────────────────────────
     iterations: int
+
+    # ── Agent Intelligence Layer Context (V3) ───────────────────────────────
+    # Populated by supervisor before routing to agents.
+    # Contains: entities, terminology, join_paths, query_examples, business_rules,
+    #           schema_summary (text for LLM prompt injection), meta
+    intelligence_context: Optional[dict]
+
+    # Time taken for semantic context retrieval (milliseconds)
+    context_retrieval_ms: Optional[float]
 
     # ── Role-Scoped Context (V2.1) ───────────────────────────────────────────
     # These fields are injected by the chat endpoint from the authenticated user.

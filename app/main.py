@@ -28,6 +28,20 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.reports_dir, exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # ── Seed Agent Intelligence Layer ───────────────────────────────────
+    # Seeds knowledge store with academic entities, terminology, and query examples.
+    # Only runs if knowledge store is empty (idempotent).
+    try:
+        from app.intelligence.knowledge_seeder import KnowledgeSeeder
+        from app.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            await KnowledgeSeeder.seed_if_empty(db)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Intelligence layer seeding failed (non-fatal — will retry on next start): {e}"
+        )
     yield
 
 
@@ -75,6 +89,10 @@ app.include_router(dept_intel_router, prefix="/api")
 # ── Data Sync (NEW) ───────────────────────────────────────────────────────────
 from app.api.data_sync import router as data_sync_router
 app.include_router(data_sync_router, prefix="/api")
+
+# ── Agent Intelligence Layer (NEW) ─────────────────────────────────────────
+from app.api.intelligence import router as intelligence_router
+app.include_router(intelligence_router, prefix="/api")
 
 # ── Admin Module Routes — Phase 1 ─────────────────────────────────────────────
 from app.api.admin.dashboard import router as admin_dashboard_router

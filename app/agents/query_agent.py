@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import json
+import time
 from typing import Optional
 
 from sqlalchemy import text
@@ -20,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.state import AgentState
 from app.llm.provider_factory import get_llm_provider
 from app.utils.sql_validator import validate_sql, SQLValidationError
+from app.intelligence.agent_context_bus import get_context_bus
+from app.intelligence.sql_context_validator import SQLContextValidator
 from app.prompts import (
     QUERY_SYSTEM_PROMPT_V2,
     QUERY_PLANNER_PROMPT,
@@ -127,10 +130,12 @@ async def _generate_sql(
     intent: dict,
     plan: list[str],
     previous_error: Optional[str] = None,
+    intelligence_context: Optional[dict] = None,
 ) -> str:
     """
     Step 2: Generate SQL based on the plan and intent.
     If previous_error is provided, this is a retry with correction context.
+    Injects schema_summary from intelligence context if available.
     """
     enriched_query = intent.get("enriched_query", query)
     entities = intent.get("entities", {})
@@ -147,6 +152,14 @@ async def _generate_sql(
             "- Verify JOIN conditions\n"
         )
 
+    # ── Intelligence context injection ─────────────────────────────────────
+    context_section = ""
+    if intelligence_context and intelligence_context.get("schema_summary"):
+        context_section = (
+            f"\n\nSEMANTIC CONTEXT (use this instead of guessing schema):\n"
+            f"{intelligence_context['schema_summary']}\n"
+        )
+
     sql_request = (
         f"User question: \"{enriched_query}\"\n"
         f"Query type: {intent.get('query_type', 'descriptive')}\n"
@@ -154,6 +167,7 @@ async def _generate_sql(
         f"Metrics needed: {entities.get('metrics', [])}\n"
         f"Time filter: {entities.get('time', 'none')}\n\n"
         f"Execution plan:\n{plan_str}\n"
+        f"{context_section}"
         f"{correction_note}\n"
         "Write the SQL query to execute this plan."
     )
@@ -238,13 +252,18 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
     """
     LangGraph node: Query Agent V2.
     Full reasoning pipeline: plan → SQL → validate → execute → retry → insights.
+    Uses Agent Intelligence Layer context from state if available.
     """
     llm = get_llm_provider()
     query = state.get("user_query", "")
     intent = state.get("intent", {})
+    intelligence_context = state.get("intelligence_context") or {}
 
     # Use enriched query if semantic layer resolved references
     effective_query = intent.get("enriched_query", query) or query
+
+    # Track query start time for feedback
+    query_start = time.monotonic()
 
     # ── Step 1: Generate Query Plan ─────────────────────────────────────────
     plan = await _generate_query_plan(llm, effective_query, intent)
@@ -263,6 +282,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
                 intent,
                 plan,
                 previous_error=last_error if attempt > 0 else None,
+                intelligence_context=intelligence_context,
             )
         except ValueError as e:
             last_error = str(e)
@@ -311,6 +331,24 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
                 }
             continue
 
+        # Context validation — warn on unknown tables
+        if intelligence_context:
+            ctx_validator = SQLContextValidator()
+            val_result = ctx_validator.validate(safe_sql, intelligence_context)
+            if not val_result.valid:
+                last_error = f"SQL context validation failed: {'; '.join(val_result.errors)}"
+                if attempt == MAX_RETRIES - 1:
+                    return {
+                        "agent_used": "query",
+                        "query_plan": plan,
+                        "sql_result": [],
+                        "insights": [],
+                        "recommendations": [],
+                        "error": last_error,
+                        "final_response": "The generated query referenced invalid tables. Please rephrase your question.",
+                    }
+                continue
+
         # Execute against DB
         rows, db_error = await _execute_sql(db, safe_sql)
 
@@ -338,7 +376,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
         last_error = None
         break
 
-    # ── Step 5: Generate Insights ────────────────────────────────────────────
+    # ── Step 5: Generate Insights ──────────────────────────────────────────
     insight_data = await _generate_insights(llm, effective_query, sql_result, intent)
 
     summary = insight_data.get("summary", "")
@@ -352,6 +390,32 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
         final_response = f"Found {len(sql_result)} records matching your query."
     else:
         final_response = "No records were found matching your query."
+
+    # ── Step 6: Feedback Learning Loop ────────────────────────────────────
+    # Store successful queries in query memory for future retrieval
+    if final_sql and sql_result and not last_error:
+        try:
+            exec_time_ms = int((time.monotonic() - query_start) * 1000)
+            entities_used = intent.get("entities", {}).get("departments", [])
+            tables_used = [
+                e.get("primary_table", "") for e in
+                (intelligence_context.get("entities") or [])
+            ]
+            bus = get_context_bus()
+            await bus.store_successful_query(
+                question=effective_query,
+                generated_sql=final_sql,
+                result_summary=summary or f"Returned {len(sql_result)} rows.",
+                entities_used=entities_used,
+                tables_used=[t for t in tables_used if t],
+                metrics_used=intent.get("entities", {}).get("metrics", []),
+                agent_used="query",
+                query_type=intent.get("query_type", "descriptive"),
+                exec_time_ms=exec_time_ms,
+                db=db,
+            )
+        except Exception:
+            pass  # Non-critical
 
     return {
         "agent_used": "query",

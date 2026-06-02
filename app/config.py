@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     anthropic_api_key: str = "" #   
     groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
 
     # CORS
     frontend_url: str = "http://localhost:3000"

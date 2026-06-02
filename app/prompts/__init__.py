@@ -15,7 +15,7 @@ DATABASE SCHEMA (PostgreSQL):
 Tables and columns:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 students
-  id, roll_number, name, email, department_id, semester (1-8),
+  id, roll_number, name, email, department_id, current_semester (1-8),
   batch (e.g. '2021-2025'), section, risk_score (0-100 float)
 
 departments
@@ -50,6 +50,8 @@ PostgreSQL rules:
   - ALWAYS cast the inner expression to ::numeric before ROUND: ROUND((marks_obtained * 100.0 / max_marks)::numeric, 2)
   - Use NULLIF to avoid division by zero
   - Limit to 100 rows unless user asks for all
+  - Prefer filtering by department code (`d.code = 'CSE'`) over name matching when abbreviations (CSE, ECE, etc.) are used.
+  - If matching department names or descriptions, use `ILIKE` (e.g., `d.name ILIKE '%Computer Science%'`) instead of `=` to handle spelling variations (like 'and' vs '&').
 """
 
 
@@ -192,7 +194,7 @@ YOUR BEHAVIOR:
 7. For attendance calculations: SUM(CASE WHEN status='present' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(id), 0)
 8. For marks percentage: marks_obtained * 100.0 / NULLIF(max_marks, 0)
 9. For pass rate: use 40 as the passing threshold
-
+10. CRITICAL: When filtering by department, ALWAYS filter using the department code column (e.g. `d.code = 'CSE'` or `d.code = 'ECE'`). Do NOT filter using `d.name` (like 'Computer Science & Engineering') because spelling variations (such as '&' vs 'and') will cause the query to fail.
 COLLEGE KNOWLEDGE:
 - "arrears" = subjects where marks < 40%
 - "at risk" = risk_score > 60

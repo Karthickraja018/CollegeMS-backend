@@ -57,16 +57,15 @@ class ChatMessage(BaseModel):
 async def _event_stream(
     query: str,
     history: list[dict],
-    db: AsyncSession,
-    ai_context: dict | None = None,
+    user_context: dict = None,
 ) -> AsyncIterator[str]:
     """
     Run the V2 LangGraph supervisor and stream SSE events.
-    The full graph runs to completion, then we stream results back.
+    The database connection is closed immediately after the graph runs to free up pool resources.
     """
     try:
-        graph = build_supervisor_graph(db)
-
+        from app.database import AsyncSessionLocal
+        
         # Convert conversation history to LangGraph message format
         lc_messages = []
         for msg in history[-10:]:  # Limit context window to last 10 turns
@@ -76,7 +75,7 @@ async def _event_stream(
         lc_messages.append(("user", query))
 
         # Role context injected so LLM can respect data access boundaries
-        user_context = ai_context or {}
+        user_context = user_context or {}
 
         initial_state: AgentState = {
             "messages": lc_messages,
@@ -105,64 +104,58 @@ async def _event_stream(
             "student_filter_sql": user_context.get("student_filter_sql", ""),
         }
 
-        # ── Run the graph and stream progressively ───────────────────────────
         current_state = initial_state
-        async for output in graph.astream(initial_state):
-            # output is a dict like {'node_name': node_state}
-            for node_name, state in output.items():
-                current_state = state
-                
-                # After intent classification, we know which agent is selected
-                if node_name == "classify":
-                    agent_used = state.get("agent_used", "query")
-                    pipeline = state.get("agent_pipeline", [agent_used])
-                    yield f"data: {safe_json_dumps({'type': 'agent', 'agent': agent_used, 'pipeline': pipeline})}\n\n"
-                    await asyncio.sleep(0.01)
 
-        # After the graph finishes, we extract final results from current_state
+        # Run the entire Graph within the DB session context
+        async with AsyncSessionLocal() as db:
+            graph = build_supervisor_graph(db)
+            async for output in graph.astream(initial_state):
+                for node_name, state in output.items():
+                    current_state = state
+                    if node_name == "classify":
+                        agent_used = state.get("agent_used", "query")
+                        pipeline = state.get("agent_pipeline", [agent_used])
+                        yield f"data: {safe_json_dumps({'type': 'agent', 'agent': agent_used, 'pipeline': pipeline})}\n\n"
+
+        # The DB session is now closed! The connection is returned to the pool.
         result = current_state
 
         # ── Emit: query plan ─────────────────────────────────────────────────
         query_plan = result.get("query_plan", [])
         if query_plan:
             yield f"data: {safe_json_dumps({'type': 'query_plan', 'steps': query_plan})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: final response (streamed token by token) ───────────────────
         final_response = result.get("final_response", "")
         if final_response:
             words = final_response.split(" ")
-            chunk_size = 4
+            chunk_size = 8  # Larger chunk size for faster delivery
             for i in range(0, len(words), chunk_size):
                 chunk = " ".join(words[i: i + chunk_size])
                 if i + chunk_size < len(words):
                     chunk += " "
                 yield f"data: {safe_json_dumps({'type': 'token', 'content': chunk})}\n\n"
-                await asyncio.sleep(0.018)
+                await asyncio.sleep(0.005)  # Negligible sleep for fast fluid appearance
 
         # ── Emit: insights ───────────────────────────────────────────────────
         insights = result.get("insights", [])
         if insights:
             yield f"data: {safe_json_dumps({'type': 'insights', 'data': insights})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: recommendations ────────────────────────────────────────────
         recommendations = result.get("recommendations", [])
         if recommendations:
             yield f"data: {safe_json_dumps({'type': 'recommendations', 'data': recommendations})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: table data ─────────────────────────────────────────────────
         sql_result = result.get("sql_result", [])
         if isinstance(sql_result, list) and sql_result:
             yield f"data: {safe_json_dumps({'type': 'table', 'data': sql_result[:100]})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: analytics result ───────────────────────────────────────────
         analytics_result = result.get("analytics_result")
         if analytics_result:
             yield f"data: {safe_json_dumps({'type': 'analytics', 'data': analytics_result})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: chart spec ─────────────────────────────────────────────────
         chart_spec = result.get("chart_spec")
@@ -177,19 +170,16 @@ async def _event_stream(
 
         if chart_spec:
             yield f"data: {safe_json_dumps({'type': 'chart', 'spec': chart_spec})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: report URL ─────────────────────────────────────────────────
         report_url = result.get("report_url")
         if report_url:
             yield f"data: {safe_json_dumps({'type': 'report', 'url': report_url})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: risk analysis ──────────────────────────────────────────────
         risk_analysis = result.get("risk_analysis")
         if risk_analysis:
             yield f"data: {safe_json_dumps({'type': 'risk', 'data': risk_analysis})}\n\n"
-            await asyncio.sleep(0.01)
 
         # ── Emit: done ───────────────────────────────────────────────────────
         yield f"data: {safe_json_dumps({'type': 'done'})}\n\n"
@@ -204,11 +194,10 @@ async def chat_stream(
     body: ChatMessage,
     current_user: User = Depends(get_current_user),
     ai_context: dict = Depends(get_ai_context),
-    db: AsyncSession = Depends(get_db),
 ):
     """SSE streaming chat endpoint — V2 multi-agent supervisor with role-scoped context."""
     return StreamingResponse(
-        _event_stream(body.query, body.conversation_history, db, ai_context),
+        _event_stream(body.query, body.conversation_history, ai_context),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

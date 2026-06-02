@@ -52,12 +52,15 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 class ChatMessage(BaseModel):
     query: str
     conversation_history: list[dict] = []
+    session_key: str = None
 
 
 async def _event_stream(
     query: str,
     history: list[dict],
     user_context: dict = None,
+    session_key: str = None,
+    current_user: User = None,
 ) -> AsyncIterator[str]:
     """
     Run the V2 LangGraph supervisor and stream SSE events.
@@ -120,73 +123,146 @@ async def _event_stream(
         # The DB session is now closed! The connection is returned to the pool.
         result = current_state
 
-        # ── Emit: query plan ─────────────────────────────────────────────────
-        query_plan = result.get("query_plan", [])
-        if query_plan:
-            yield f"data: {safe_json_dumps({'type': 'query_plan', 'steps': query_plan})}\n\n"
-
-        # ── Emit: final response (streamed token by token) ───────────────────
-        final_response = result.get("final_response", "")
-        if final_response:
-            words = final_response.split(" ")
-            chunk_size = 8  # Larger chunk size for faster delivery
-            for i in range(0, len(words), chunk_size):
-                chunk = " ".join(words[i: i + chunk_size])
-                if i + chunk_size < len(words):
-                    chunk += " "
-                yield f"data: {safe_json_dumps({'type': 'token', 'content': chunk})}\n\n"
-                await asyncio.sleep(0.005)  # Negligible sleep for fast fluid appearance
-
-        # ── Emit: insights ───────────────────────────────────────────────────
+        # Emit a single structured 'analysis' event instead of chunks
         insights = result.get("insights", [])
-        if insights:
-            yield f"data: {safe_json_dumps({'type': 'insights', 'data': insights})}\n\n"
-
-        # ── Emit: recommendations ────────────────────────────────────────────
-        recommendations = result.get("recommendations", [])
-        if recommendations:
-            yield f"data: {safe_json_dumps({'type': 'recommendations', 'data': recommendations})}\n\n"
-
-        # ── Emit: table data ─────────────────────────────────────────────────
         sql_result = result.get("sql_result", [])
-        if isinstance(sql_result, list) and sql_result:
-            yield f"data: {safe_json_dumps({'type': 'table', 'data': sql_result[:100]})}\n\n"
-
-        # ── Emit: analytics result ───────────────────────────────────────────
-        analytics_result = result.get("analytics_result")
-        if analytics_result:
-            yield f"data: {safe_json_dumps({'type': 'analytics', 'data': analytics_result})}\n\n"
-
-        # ── Emit: chart spec ─────────────────────────────────────────────────
+        
         chart_spec = result.get("chart_spec")
-        if not chart_spec and result.get("sql_result") and result.get("intent", {}).get("needs_visualization", False):
+        if not chart_spec and sql_result and result.get("intent", {}).get("needs_visualization", False):
             from app.services.visualization_service import build_chart_spec
-            chart_spec = build_chart_spec(result["sql_result"], query, result["intent"])
-            # Update insights if chart generated new ones
+            chart_spec = build_chart_spec(sql_result, query, result.get("intent", {}))
             if chart_spec and chart_spec.get("insight") and chart_spec["insight"] not in insights:
                 insights.append(chart_spec["insight"])
-                yield f"data: {safe_json_dumps({'type': 'insights', 'data': insights})}\n\n"
-                await asyncio.sleep(0.01)
 
-        if chart_spec:
-            yield f"data: {safe_json_dumps({'type': 'chart', 'spec': chart_spec})}\n\n"
-
-        # ── Emit: report URL ─────────────────────────────────────────────────
-        report_url = result.get("report_url")
-        if report_url:
-            yield f"data: {safe_json_dumps({'type': 'report', 'url': report_url})}\n\n"
-
-        # ── Emit: risk analysis ──────────────────────────────────────────────
-        risk_analysis = result.get("risk_analysis")
-        if risk_analysis:
-            yield f"data: {safe_json_dumps({'type': 'risk', 'data': risk_analysis})}\n\n"
-
-        # ── Emit: done ───────────────────────────────────────────────────────
+        analysis_payload = {
+            "type": "analysis",
+            "summary": result.get("final_response", ""),
+            "insights": insights,
+            "table": sql_result[:100] if sql_result else None,
+            "chart": chart_spec,
+            "actions": result.get("recommendations", []),
+            "report_url": result.get("report_url"),
+            "analytics": result.get("analytics_result"),
+            "risk_analysis": result.get("risk_analysis")
+        }
+        
+        yield f"data: {safe_json_dumps(analysis_payload)}\n\n"
         yield f"data: {safe_json_dumps({'type': 'done'})}\n\n"
+
+        # Save to database
+        if current_user:
+            import uuid
+            from sqlalchemy import text
+            s_key = session_key or str(uuid.uuid4())
+            title = query[:50] + "..." if len(query) > 50 else query
+            agent_used = result.get("agent_used", "query")
+            
+            # Combine history and current message
+            import copy
+            saved_messages = copy.deepcopy(history)
+            saved_messages.append({"role": "user", "content": query})
+            
+            # Save assistant response
+            assistant_msg = {
+                "role": "assistant",
+                "content": analysis_payload["summary"],
+                "agent": agent_used,
+                "tableData": {"rows": analysis_payload["table"]} if analysis_payload["table"] else None,
+                "chartSpec": analysis_payload["chart"],
+                "insights": analysis_payload["insights"],
+                "actions": analysis_payload["actions"]
+            }
+            saved_messages.append(assistant_msg)
+            
+            async with AsyncSessionLocal() as db_session:
+                # Check if session exists
+                check_q = text("SELECT id FROM chat_sessions WHERE session_key = :sk")
+                res = await db_session.execute(check_q, {"sk": s_key})
+                existing = res.scalar()
+                
+                if existing:
+                    upd_q = text("""
+                        UPDATE chat_sessions 
+                        SET messages = :msgs, last_agent = :agent, updated_at = NOW() 
+                        WHERE session_key = :sk
+                    """)
+                    await db_session.execute(upd_q, {
+                        "msgs": safe_json_dumps(saved_messages), 
+                        "agent": agent_used, 
+                        "sk": s_key
+                    })
+                else:
+                    ins_q = text("""
+                        INSERT INTO chat_sessions (user_id, session_key, title, messages, last_agent)
+                        VALUES (:uid, :sk, :title, :msgs, :agent)
+                    """)
+                    await db_session.execute(ins_q, {
+                        "uid": current_user.id,
+                        "sk": s_key,
+                        "title": title,
+                        "msgs": safe_json_dumps(saved_messages),
+                        "agent": agent_used
+                    })
+                await db_session.commit()
 
     except Exception as e:
         yield f"data: {safe_json_dumps({'type': 'error', 'message': str(e)})}\n\n"
         yield f"data: {safe_json_dumps({'type': 'done'})}\n\n"
+
+
+
+@router.get("/history")
+async def get_chat_history(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    query = text("""
+        SELECT id, session_key, title, last_agent, updated_at
+        FROM chat_sessions
+        WHERE user_id = :uid
+        ORDER BY updated_at DESC
+        LIMIT 50
+    """)
+    result = await db.execute(query, {"uid": current_user.id})
+    rows = result.fetchall()
+    
+    sessions = []
+    for row in rows:
+        sessions.append({
+            "id": row.id,
+            "session_key": row.session_key,
+            "title": row.title or "New Chat",
+            "result_summary": row.title or "Chat Session",
+            "last_agent": row.last_agent,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        })
+    return {"history": sessions}
+
+
+@router.get("/history/{session_key}")
+async def get_chat_session(
+    session_key: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    query = text("""
+        SELECT messages, title
+        FROM chat_sessions
+        WHERE user_id = :uid AND session_key = :sk
+    """)
+    result = await db.execute(query, {"uid": current_user.id, "sk": session_key})
+    row = result.fetchone()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+        
+    return {
+        "session_key": session_key,
+        "title": row.title,
+        "messages": row.messages if row.messages else []
+    }
 
 
 @router.post("/stream")
@@ -197,7 +273,7 @@ async def chat_stream(
 ):
     """SSE streaming chat endpoint — V2 multi-agent supervisor with role-scoped context."""
     return StreamingResponse(
-        _event_stream(body.query, body.conversation_history, ai_context),
+        _event_stream(body.query, body.conversation_history, ai_context, body.session_key, current_user),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -27,6 +27,12 @@ async def run_seed():
             seed_sql = f.read()
         await conn.execute(seed_sql)
         print("Seed data executed successfully.")
+
+        print("Executing mock_data_extension.sql...")
+        with open("../mock_data_extension.sql", "r", encoding="utf-8") as f:
+            mock_sql = f.read()
+        await conn.execute(mock_sql)
+        print("Mock data executed successfully.")
     except Exception as e:
         print(f"Error executing sql: {e}")
     finally:

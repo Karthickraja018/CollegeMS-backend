@@ -1,128 +1,216 @@
 """
-Schema description and database query tools for Model Context Protocol.
+Database schema searching, execution, and sampling tools for NLP-SQL MCP.
 """
+import time
 import json
-from typing import Optional
+import re
+from typing import Optional, Dict, Any, List
+from pydantic import BaseModel
 from sqlalchemy import text
 from app.database import AsyncSessionLocal
+from app.agents.nlp_sql_mcp.config import AppConfig
 from app.utils.sql_validator import validate_sql as app_validate_sql, SQLValidationError
 
-# Accurate database schema mapping matching SQLAlchemy models
-SCHEMA_METADATA = {
-    "departments": {
-        "description": "College departments listing.",
-        "columns": {
-            "id": "INTEGER (Primary Key) - Unique identifier.",
-            "name": "VARCHAR (Unique) - Full name of the department.",
-            "code": "VARCHAR (Unique) - Short abbreviation code (e.g. CSE, ECE).",
-        }
-    },
-    "users": {
-        "description": "System accounts for admins, principals, HODs, and faculty.",
-        "columns": {
-            "id": "INTEGER (Primary Key) - Unique identifier.",
-            "email": "VARCHAR (Unique) - User login email address.",
-            "full_name": "VARCHAR - Full name of the user.",
-            "role": "VARCHAR - User role ('admin', 'principal', 'hod', 'faculty').",
-            "department_id": "INTEGER (Foreign Key -> departments.id) - Associated department.",
-            "is_active": "BOOLEAN - Account active status.",
-        }
-    },
-    "students": {
-        "description": "Students registered in the system.",
-        "columns": {
-            "id": "INTEGER (Primary Key) - Unique identifier.",
-            "roll_number": "VARCHAR (Unique) - Student's roll number (e.g. CS2001).",
-            "name": "VARCHAR - Full name of the student.",
-            "email": "VARCHAR (Unique) - Student's email address.",
-            "department_id": "INTEGER (Foreign Key -> departments.id) - Associated department.",
-            "semester": "INTEGER - Current semester (1 to 8).",
-            "batch": "VARCHAR - Student cohort batch year (e.g., 2023-2027).",
-            "section": "VARCHAR (Nullable) - Class section letter (e.g., A, B).",
-            "risk_score": "FLOAT (Nullable) - Calculated academic failure risk level.",
-        }
-    },
-    "subjects": {
-        "description": "Academic courses offered.",
-        "columns": {
-            "id": "INTEGER (Primary Key) - Unique identifier.",
-            "code": "VARCHAR (Unique) - Subject code (e.g. CS8501).",
-            "name": "VARCHAR - Full name of the subject.",
-            "department_id": "INTEGER (Foreign Key -> departments.id) - Offering department.",
-            "semester": "INTEGER - Academic semester in which subject is taught.",
-            "credits": "INTEGER - Subject credit weight.",
-        }
-    },
-    "attendance": {
-        "description": "Student daily attendance logs.",
-        "columns": {
-            "id": "INTEGER (Primary Key) - Unique identifier.",
-            "student_id": "INTEGER (Foreign Key -> students.id) - Reference to student.",
-            "subject_id": "INTEGER (Foreign Key -> subjects.id) - Reference to subject.",
-            "date": "DATE - Date of class.",
-            "status": "VARCHAR - Attendance status ('present' or 'absent').",
-        }
-    },
-    "marks": {
-        "description": "Academic exam marks achievements.",
-        "columns": {
-            "id": "INTEGER (Primary Key) - Unique identifier.",
-            "student_id": "INTEGER (Foreign Key -> students.id) - Reference to student.",
-            "subject_id": "INTEGER (Foreign Key -> subjects.id) - Reference to subject.",
-            "semester": "INTEGER - Academic semester.",
-            "exam_type": "VARCHAR - Exam categories ('internal1', 'internal2', 'internal3', 'semester_end', 'practical', 'assignment').",
-            "marks_obtained": "FLOAT - Scored marks.",
-            "max_marks": "FLOAT - Maximum possible marks.",
-        }
-    }
-}
+# Pydantic models matching the connector models for responses
+class ColumnResult(BaseModel):
+    name: str
+    type: str
+    pk: bool
+    fk: Optional[str] = None
+    nullable: bool
+    enum_values: Optional[List[str]] = None
+    lookup: bool = False
+    lookup_limit: int = 20
+
+class TableResult(BaseModel):
+    name: str
+    description: Optional[str] = None
+    columns: List[ColumnResult]
+
+class SearchSchemaResult(BaseModel):
+    tables: List[TableResult]
+    relationships: List[str]
+
+class ExecuteResult(BaseModel):
+    columns: Optional[List[str]] = None
+    rows: Optional[List[List[Any]]] = None
+    row_count: Optional[int] = None
+    execution_ms: Optional[int] = None
+    error: Optional[str] = None
+    message: Optional[str] = None
+
+class SampleValuesResult(BaseModel):
+    values: List[str]
 
 
-def tool_search_schema(keyword: Optional[str] = None) -> str:
+def tool_search_schema(question: Optional[str] = None) -> str:
     """
-    Search database schema details (table structures, column definitions, data types).
-    Use this to find which tables or columns to query for specific fields.
+    Search the database schema details using keyword match against table names or descriptions.
     """
-    if not keyword:
-        return json.dumps(SCHEMA_METADATA, indent=2)
+    schema = AppConfig.get_schema()
     
-    keyword_lower = keyword.lower()
-    filtered = {}
-    for table_name, meta in SCHEMA_METADATA.items():
-        if keyword_lower in table_name.lower() or keyword_lower in meta["description"].lower():
-            filtered[table_name] = meta
-            continue
+    if not question:
+        # Return complete schema format
+        tables = []
+        relationships = set()
+        for t_name, t_def in schema.tables.items():
+            cols = []
+            for c_name, c_def in t_def.columns.items():
+                cols.append(ColumnResult(
+                    name=c_name,
+                    type=c_def.type,
+                    pk=c_def.pk,
+                    fk=c_def.fk,
+                    nullable=c_def.nullable,
+                    enum_values=c_def.enum_values,
+                    lookup=c_def.lookup,
+                    lookup_limit=c_def.lookup_limit
+                ))
+                if c_def.fk:
+                    relationships.add(f"{t_name}.{c_name} -> {c_def.fk}")
+            tables.append(TableResult(
+                name=t_name,
+                description=t_def.description,
+                columns=cols
+            ))
+        res = SearchSchemaResult(tables=tables, relationships=list(relationships))
+        return res.model_dump_json(indent=2)
+
+    # Tokenize question into words
+    words = set(re.findall(r'\b\w+\b', question.lower()))
+    
+    matched_tables = []
+    relationships = set()
+    
+    for table_name, table_def in schema.tables.items():
+        table_name_lower = table_name.lower()
+        desc_lower = (table_def.description or "").lower()
         
-        matching_cols = {}
-        for col_name, col_desc in meta["columns"].items():
-            if keyword_lower in col_name.lower() or keyword_lower in col_desc.lower():
-                matching_cols[col_name] = col_desc
+        table_match = False
+        if table_name_lower in words:
+            table_match = True
         
-        if matching_cols:
-            filtered[table_name] = {
-                "description": meta["description"],
-                "columns": matching_cols
-            }
+        for w in words:
+            if len(w) > 3 and w in table_name_lower:
+                table_match = True
+            if len(w) > 3 and w in desc_lower:
+                table_match = True
+        
+        matched_columns = []
+        for col_name, col_def in table_def.columns.items():
+            col_name_lower = col_name.lower()
+            col_match = table_match
             
-    return json.dumps(filtered, indent=2) if filtered else f"No tables or columns match the keyword: '{keyword}'"
+            if not col_match:
+                if col_name_lower in words:
+                    col_match = True
+                for w in words:
+                    if len(w) > 3 and w in col_name_lower:
+                        col_match = True
+            
+            if col_match or table_match:
+                matched_columns.append(ColumnResult(
+                    name=col_name,
+                    type=col_def.type,
+                    pk=col_def.pk,
+                    fk=col_def.fk,
+                    nullable=col_def.nullable,
+                    enum_values=col_def.enum_values,
+                    lookup=col_def.lookup,
+                    lookup_limit=col_def.lookup_limit
+                ))
+                if col_def.fk:
+                    relationships.add(f"{table_name}.{col_name} -> {col_def.fk}")
+        
+        if matched_columns:
+            matched_tables.append(TableResult(
+                name=table_name,
+                description=table_def.description,
+                columns=matched_columns
+            ))
+            
+    res = SearchSchemaResult(
+        tables=matched_tables,
+        relationships=list(relationships)
+    )
+    return res.model_dump_json(indent=2)
 
 
-async def tool_execute_sql(sql: str) -> str:
+async def tool_execute_sql(sql: str, params: Optional[Dict[str, Any]] = None) -> str:
     """
     Execute a validated SQL SELECT statement and return results in JSON.
     """
-    # Verify SQL safety
+    if params is None:
+        params = {}
+        
+    # Safety validation
     try:
         app_validate_sql(sql)
     except SQLValidationError as e:
-        return json.dumps({"error": f"Safety check failed: {str(e)}"})
+        return ExecuteResult(
+            error="SQLValidationError",
+            message=f"Safety check failed: {str(e)}"
+        ).model_dump_json(indent=2)
 
+    start_time = time.time()
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(text(sql))
+            result = await db.execute(text(sql), params)
             rows = result.fetchall()
             columns = list(result.keys())
-            data = [dict(zip(columns, row)) for row in rows]
-            return json.dumps(data, indent=2, default=str)
+            rows_list = [list(row) for row in rows]
+            execution_ms = int((time.time() - start_time) * 1000)
+            
+            return ExecuteResult(
+                columns=columns,
+                rows=rows_list,
+                row_count=len(rows_list),
+                execution_ms=execution_ms
+            ).model_dump_json(indent=2)
+            
     except Exception as e:
-        return json.dumps({"error": f"Database execution error: {str(e)}"})
+        return ExecuteResult(
+            error=e.__class__.__name__,
+            message=str(e)
+        ).model_dump_json(indent=2)
+
+
+async def tool_sample_values(table: str, column: str, search_term: Optional[str] = None, limit: int = 20) -> str:
+    """
+    Fetch distinct values for a given table and column.
+    Only allows columns marked as lookup: true in the schema.
+    """
+    schema = AppConfig.get_schema()
+    
+    if table not in schema.tables:
+        return json.dumps({"error": f"Table '{table}' does not exist in schema."})
+        
+    table_def = schema.tables[table]
+    if column not in table_def.columns:
+        return json.dumps({"error": f"Column '{column}' does not exist in table '{table}'."})
+        
+    col_def = table_def.columns[column]
+    if not col_def.lookup:
+        return json.dumps({"error": f"Column '{column}' in table '{table}' is not marked for lookup."})
+
+    limit_int = int(limit)
+    if limit_int > col_def.lookup_limit:
+        limit_int = col_def.lookup_limit
+        
+    params = {}
+    base_sql = f"SELECT DISTINCT {column} FROM {table}"
+    
+    if search_term:
+        # Simple parameterization
+        base_sql += f" WHERE {column} ILIKE :term"
+        params["term"] = f"%{search_term}%"
+        
+    base_sql += f" LIMIT {limit_int}"
+    
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(text(base_sql), params)
+            values = [str(row[0]) for row in result.fetchall() if row[0] is not None]
+            return SampleValuesResult(values=values).model_dump_json(indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})

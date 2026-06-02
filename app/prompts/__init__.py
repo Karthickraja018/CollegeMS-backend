@@ -49,7 +49,7 @@ Key formulas:
 PostgreSQL rules:
   - ALWAYS cast the inner expression to ::numeric before ROUND: ROUND((marks_obtained * 100.0 / max_marks)::numeric, 2)
   - Use NULLIF to avoid division by zero
-  - Limit to 100 rows unless user asks for all
+  - ALWAYS LIMIT all SQL queries to exactly 10 rows (LIMIT 10) unless the user explicitly asks for more.
   - Prefer filtering by department code (`d.code = 'CSE'`) over name matching when abbreviations (CSE, ECE, etc.) are used.
   - If matching department names or descriptions, use `ILIKE` (e.g., `d.name ILIKE '%Computer Science%'`) instead of `=` to handle spelling variations (like 'and' vs '&').
 """
@@ -190,7 +190,7 @@ YOUR BEHAVIOR:
 3. Use COALESCE to handle NULLs gracefully
 4. Cast the entire expression to ::numeric before ROUND: ROUND((value)::numeric, 2) — PostgreSQL requirement
 5. Always include department name, student name, subject name in results
-6. Limit to 100 rows unless user asks for all
+6. ALWAYS limit the query results to exactly 10 rows (LIMIT 10) unless the user explicitly asks for more.
 7. For attendance calculations: SUM(CASE WHEN status='present' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(id), 0)
 8. For marks percentage: marks_obtained * 100.0 / NULLIF(max_marks, 0)
 9. For pass rate: use 40 as the passing threshold

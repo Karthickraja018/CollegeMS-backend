@@ -207,12 +207,9 @@ async def _generate_insights(
     Step 3 (post-execution): Generate insights from the results.
     Returns {"summary": str, "insights": [...], "recommendations": [...]}
     """
-    if not data:
-        return {
-            "summary": "No records were found matching your query.",
-            "insights": [],
-            "recommendations": ["Try broadening your search criteria or check if data has been uploaded for this period."],
-        }
+    # Allow LLM to explain empty data instead of hardcoding
+    # if not data:
+    #     return { ... }
 
     data_preview = data[:60]
     query_type = intent.get("query_type", "descriptive")
@@ -242,11 +239,37 @@ async def _generate_insights(
         pass
 
     # Fallback
+    if not data:
+        return {
+            "summary": "No records were found matching your query.",
+            "insights": ["The database returned 0 rows for this query."],
+            "recommendations": ["Check if the data has been uploaded.", "Try broadening your filters."],
+        }
     return {
         "summary": f"Found {len(data)} records matching your query.",
         "insights": [f"Query returned {len(data)} records."],
         "recommendations": [],
     }
+
+async def _explain_error(llm, query: str, error_msg: str) -> str:
+    """Ask LLM to explain why a query failed to the user."""
+    prompt = (
+        f"User asked: \"{query}\"\n"
+        f"System encountered an error: {error_msg}\n\n"
+        "Explain this error to the user in a friendly, non-technical way. "
+        "For example, if the error says a table or column does not exist, tell the user the data they are looking for is not available in the system. "
+        "Keep it concise (1-2 sentences)."
+    )
+    try:
+        response = await llm.generate(
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt="You are a helpful AI assistant. Explain technical errors in simple terms.",
+            temperature=0.3,
+        )
+        return _strip_thinking(response)
+    except Exception:
+        return f"I encountered an error while processing your request: {error_msg}"
+
 
 
 async def _execute_sql(db: AsyncSession, sql: str) -> tuple[list[dict], Optional[str]]:
@@ -306,6 +329,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
         except ValueError as e:
             last_error = str(e)
             if attempt == MAX_RETRIES - 1:
+                explanation = await _explain_error(llm, effective_query, str(e))
                 return {
                     "agent_used": "query",
                     "query_plan": plan,
@@ -313,15 +337,13 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
                     "insights": [],
                     "recommendations": [],
                     "error": str(e),
-                    "final_response": (
-                        "I had difficulty formulating a precise database query for your request. "
-                        "Could you rephrase it with more specific details?"
-                    ),
+                    "final_response": explanation,
                 }
             continue
         except Exception as e:
             last_error = f"LLM generation failed: {str(e)}"
             if attempt == MAX_RETRIES - 1:
+                explanation = await _explain_error(llm, effective_query, last_error)
                 return {
                     "agent_used": "query",
                     "query_plan": plan,
@@ -329,7 +351,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
                     "insights": [],
                     "recommendations": [],
                     "error": last_error,
-                    "final_response": f"I encountered an error generating the query: {str(e)}",
+                    "final_response": explanation,
                 }
             continue
 
@@ -339,6 +361,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
         except SQLValidationError as e:
             last_error = f"SQL safety validation failed: {str(e)}"
             if attempt == MAX_RETRIES - 1:
+                explanation = await _explain_error(llm, effective_query, last_error)
                 return {
                     "agent_used": "query",
                     "query_plan": plan,
@@ -346,7 +369,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
                     "insights": [],
                     "recommendations": [],
                     "error": last_error,
-                    "final_response": "The generated query was rejected for safety reasons. Please try a different question.",
+                    "final_response": explanation,
                 }
             continue
 
@@ -357,6 +380,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
             if not val_result.valid:
                 last_error = f"SQL context validation failed: {'; '.join(val_result.errors)}"
                 if attempt == MAX_RETRIES - 1:
+                    explanation = await _explain_error(llm, effective_query, last_error)
                     return {
                         "agent_used": "query",
                         "query_plan": plan,
@@ -364,7 +388,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
                         "insights": [],
                         "recommendations": [],
                         "error": last_error,
-                        "final_response": "The generated query referenced invalid tables. Please rephrase your question.",
+                        "final_response": explanation,
                     }
                 continue
 
@@ -374,6 +398,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
         if db_error:
             last_error = f"Database execution error: {db_error}"
             if attempt == MAX_RETRIES - 1:
+                explanation = await _explain_error(llm, effective_query, last_error)
                 return {
                     "agent_used": "query",
                     "query_plan": plan,
@@ -381,10 +406,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
                     "insights": [],
                     "recommendations": [],
                     "error": last_error,
-                    "final_response": (
-                        f"I generated a valid query but it encountered a database error. "
-                        f"Details: {db_error}"
-                    ),
+                    "final_response": explanation,
                 }
             # Loop back with error for LLM to correct
             continue

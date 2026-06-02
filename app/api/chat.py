@@ -23,6 +23,7 @@ from datetime import datetime, date
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy import text
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -137,49 +138,39 @@ async def _event_stream(
                 yield f"data: {safe_json_dumps({'type': 'token', 'content': chunk})}\n\n"
                 await asyncio.sleep(0.005)  # Negligible sleep for fast fluid appearance
 
-        # ── Emit: insights ───────────────────────────────────────────────────
-        insights = result.get("insights", [])
-        if insights:
-            yield f"data: {safe_json_dumps({'type': 'insights', 'data': insights})}\n\n"
+        # ── Emit: analysis schema ────────────────────────────────────────────
+        analysis_payload = {
+            "type": "analysis",
+            "summary": final_response,
+            "insights": result.get("insights", []),
+            "table": None,
+            "chart": None,
+            "actions": result.get("recommendations", []),
+            "report_url": result.get("report_url"),
+            "analytics": result.get("analytics_result"),
+            "risk_analysis": result.get("risk_analysis")
+        }
 
-        # ── Emit: recommendations ────────────────────────────────────────────
-        recommendations = result.get("recommendations", [])
-        if recommendations:
-            yield f"data: {safe_json_dumps({'type': 'recommendations', 'data': recommendations})}\n\n"
-
-        # ── Emit: table data ─────────────────────────────────────────────────
         sql_result = result.get("sql_result", [])
         if isinstance(sql_result, list) and sql_result:
-            yield f"data: {safe_json_dumps({'type': 'table', 'data': sql_result[:100]})}\n\n"
+            analysis_payload["table"] = {
+                "columns": list(sql_result[0].keys()) if sql_result else [],
+                "rows": sql_result[:1000],  # Increased limit for virtualization
+                "row_count": len(sql_result),
+                "source": result.get("agent_used", "database")
+            }
 
-        # ── Emit: analytics result ───────────────────────────────────────────
-        analytics_result = result.get("analytics_result")
-        if analytics_result:
-            yield f"data: {safe_json_dumps({'type': 'analytics', 'data': analytics_result})}\n\n"
-
-        # ── Emit: chart spec ─────────────────────────────────────────────────
         chart_spec = result.get("chart_spec")
-        if not chart_spec and result.get("sql_result") and result.get("intent", {}).get("needs_visualization", False):
+        if not chart_spec and sql_result and result.get("intent", {}).get("needs_visualization", False):
             from app.services.visualization_service import build_chart_spec
-            chart_spec = build_chart_spec(result["sql_result"], query, result["intent"])
-            # Update insights if chart generated new ones
-            if chart_spec and chart_spec.get("insight") and chart_spec["insight"] not in insights:
-                insights.append(chart_spec["insight"])
-                yield f"data: {safe_json_dumps({'type': 'insights', 'data': insights})}\n\n"
-                await asyncio.sleep(0.01)
+            chart_spec = build_chart_spec(sql_result, query, result["intent"])
+            if chart_spec and chart_spec.get("insight") and chart_spec["insight"] not in analysis_payload["insights"]:
+                analysis_payload["insights"].append(chart_spec["insight"])
 
         if chart_spec:
-            yield f"data: {safe_json_dumps({'type': 'chart', 'spec': chart_spec})}\n\n"
+            analysis_payload["chart"] = chart_spec
 
-        # ── Emit: report URL ─────────────────────────────────────────────────
-        report_url = result.get("report_url")
-        if report_url:
-            yield f"data: {safe_json_dumps({'type': 'report', 'url': report_url})}\n\n"
-
-        # ── Emit: risk analysis ──────────────────────────────────────────────
-        risk_analysis = result.get("risk_analysis")
-        if risk_analysis:
-            yield f"data: {safe_json_dumps({'type': 'risk', 'data': risk_analysis})}\n\n"
+        yield f"data: {safe_json_dumps(analysis_payload)}\n\n"
 
         # ── Emit: done ───────────────────────────────────────────────────────
         yield f"data: {safe_json_dumps({'type': 'done'})}\n\n"
@@ -263,3 +254,17 @@ async def trigger_performance_analysis(
         "summary": result.get("final_response"),
         "error": result.get("error"),
     }
+
+@router.get("/history")
+async def get_chat_history(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Fetch the most recent queries successfully processed by the AI.
+    """
+    result = await db.execute(
+        text("SELECT id, question as title, result_summary, created_at FROM query_examples ORDER BY created_at DESC LIMIT 10")
+    )
+    history = [dict(zip(result.keys(), row)) for row in result.fetchall()]
+    return {"history": history}

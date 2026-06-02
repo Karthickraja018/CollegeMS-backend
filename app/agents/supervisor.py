@@ -159,6 +159,17 @@ async def _classify_intent(state: AgentState) -> dict:
     except Exception:
         # Fallback: use semantic layer's heuristic detection
         query_type = enrichment["query_type"]
+        needs_viz = query_type == "visualization"
+        needs_report = query_type == "report"
+        needs_analytics = query_type in ("comparative", "trend", "ranking", "analytical")
+        needs_performance = query_type == "predictive"
+        
+        pipeline = ["query"]
+        if needs_performance:
+            pipeline = ["performance"]
+        elif needs_report:
+            pipeline = ["report"]
+            
         intent = {
             "query_type": query_type,
             "entities": {

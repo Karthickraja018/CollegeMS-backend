@@ -1,0 +1,191 @@
+tables:
+  departments:
+    description: "College departments listing."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      name:
+        type: varchar
+        pk: false
+        nullable: false
+      code:
+        type: varchar
+        pk: false
+        nullable: false
+        lookup: true
+        lookup_limit: 20
+  users:
+    description: "System accounts for admins, principals, HODs, and faculty."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      email:
+        type: varchar
+        pk: false
+        nullable: false
+      full_name:
+        type: varchar
+        pk: false
+        nullable: false
+      role:
+        type: enum
+        pk: false
+        nullable: false
+        enum_values:
+          - admin
+          - principal
+          - hod
+          - faculty
+      department_id:
+        type: int
+        pk: false
+        nullable: true
+        fk: "departments.id"
+      is_active:
+        type: boolean
+        pk: false
+        nullable: false
+  students:
+    description: "Students registered in the system."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      roll_number:
+        type: varchar
+        pk: false
+        nullable: false
+        lookup: true
+        lookup_limit: 50
+      name:
+        type: varchar
+        pk: false
+        nullable: false
+      email:
+        type: varchar
+        pk: false
+        nullable: false
+      department_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "departments.id"
+      semester:
+        type: int
+        pk: false
+        nullable: false
+      batch:
+        type: varchar
+        pk: false
+        nullable: false
+      section:
+        type: varchar
+        pk: false
+        nullable: true
+      risk_score:
+        type: float
+        pk: false
+        nullable: true
+  subjects:
+    description: "Academic courses offered."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      code:
+        type: varchar
+        pk: false
+        nullable: false
+        lookup: true
+        lookup_limit: 50
+      name:
+        type: varchar
+        pk: false
+        nullable: false
+      department_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "departments.id"
+      semester:
+        type: int
+        pk: false
+        nullable: false
+      credits:
+        type: int
+        pk: false
+        nullable: false
+  attendance:
+    description: "Student daily attendance logs."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      student_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "students.id"
+      subject_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "subjects.id"
+      date:
+        type: date
+        pk: false
+        nullable: false
+      status:
+        type: enum
+        pk: false
+        nullable: false
+        enum_values:
+          - present
+          - absent
+  marks:
+    description: "Academic exam marks achievements."
+    columns:
+      id:
+        type: int
+        pk: true
+        nullable: false
+      student_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "students.id"
+      subject_id:
+        type: int
+        pk: false
+        nullable: false
+        fk: "subjects.id"
+      semester:
+        type: int
+        pk: false
+        nullable: false
+      exam_type:
+        type: enum
+        pk: false
+        nullable: false
+        enum_values:
+          - internal1
+          - internal2
+          - internal3
+          - semester_end
+          - practical
+          - assignment
+      marks_obtained:
+        type: float
+        pk: false
+        nullable: false
+      max_marks:
+        type: float
+        pk: false
+        nullable: false

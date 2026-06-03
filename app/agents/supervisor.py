@@ -105,7 +105,7 @@ def _extract_memory_context(conversation_history: list) -> dict:
     return memory
 
 
-async def _classify_intent(state: AgentState) -> dict:
+async def _classify_intent(state: AgentState, db: AsyncSession = None) -> dict:
     """
     Classify user intent using Rule-Based Routing + LLM Fallback.
     """
@@ -174,6 +174,35 @@ async def _classify_intent(state: AgentState) -> dict:
         "primary_agent": route if route else "query",
     }
 
+    # ── Authorization Check ─────────────────────────────────────────────────
+    requested_depts = intent["entities"]["departments"]
+    is_inst_wide = state.get("is_institution_wide")
+    user_dept_id = state.get("user_department_id")
+
+    if requested_depts and is_inst_wide is False and user_dept_id and db:
+        from sqlalchemy import text
+        try:
+            r = await db.execute(
+                text("SELECT name FROM departments WHERE id = :id"), 
+                {"id": user_dept_id}
+            )
+            row = r.fetchone()
+            if row:
+                user_dept_name = row[0]
+                for req_dept in requested_depts:
+                    if req_dept.lower() != user_dept_name.lower():
+                        timing_metrics["supervisor_time"] = round(time.time() - start_time, 2)
+                        return {
+                            "intent": intent,
+                            "error": f"Access Denied: You do not have permission to view data for the {req_dept} department.",
+                            "final_response": f"Sorry, you do not have access to data for the {req_dept} department. You can only view data for {user_dept_name}.",
+                            "agent_pipeline": [],
+                            "agent_used": "supervisor",
+                            "timing_metrics": timing_metrics,
+                        }
+        except Exception as e:
+            print(f"Auth check failed: {e}")
+
     # ── LLM Fallback Classification if NO rule matches ─────────────────────
     if not route:
         context_note = ""
@@ -232,6 +261,9 @@ def _route_from_classify(state: AgentState) -> str:
     """
     Route to first agent in the pipeline after intent classification.
     """
+    if state.get("error") or state.get("final_response"):
+        return END
+
     pipeline = state.get("agent_pipeline", ["query"])
     return pipeline[0] if pipeline else "query"
 
@@ -278,8 +310,10 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
 
     graph = StateGraph(AgentState)
 
+    classify_node = partial(_classify_intent, db=db)
+
     # ── Nodes ───────────────────────────────────────────────────────────────
-    graph.add_node("classify", _classify_intent)
+    graph.add_node("classify", classify_node)
     graph.add_node("query", query_node)
     graph.add_node("analytics", analytics_agent_node)
     graph.add_node("visualization", visualization_agent_node)
@@ -299,6 +333,7 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
             "visualization": "visualization",
             "performance": "performance",
             "report": "report",
+            END: END,
         },
     )
 

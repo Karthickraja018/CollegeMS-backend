@@ -16,6 +16,7 @@ from .placement_application import PlacementApplication
 from .principal import InstitutionMetric, DepartmentMetric, StudentRiskScore, AccreditationMetric, ExecutiveInsight
 from .performance import StaffPerformanceMetric, HodPerformanceMetric
 
+
 __all__ = [
     "College",
     "AcademicYear",
@@ -38,5 +39,5 @@ __all__ = [
     "AccreditationMetric",
     "ExecutiveInsight",
     "StaffPerformanceMetric",
-    "HodPerformanceMetric",
+    "HodPerformanceMetric"
 ]

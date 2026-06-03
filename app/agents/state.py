@@ -35,10 +35,10 @@ class AgentState(TypedDict):
     report_url: Optional[str]
     risk_analysis: Optional[dict]
 
-    # ── Composed response fields ────────────────────────────────────────────
     final_response: str
     insights: list[str]
     recommendations: list[str]
+    draft_actions: list[dict]
 
     # ── Error state ─────────────────────────────────────────────────────────
     error: Optional[str]

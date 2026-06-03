@@ -72,6 +72,8 @@ from app.api.department_intelligence import router as dept_intel_router
 app.include_router(student_intel_router, prefix="/api")
 app.include_router(dept_intel_router, prefix="/api")
 
+
+
 # ── Data Sync (NEW) ───────────────────────────────────────────────────────────
 from app.api.data_sync import router as data_sync_router
 app.include_router(data_sync_router, prefix="/api")

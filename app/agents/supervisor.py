@@ -268,26 +268,35 @@ def _route_from_classify(state: AgentState) -> str:
     return pipeline[0] if pipeline else "query"
 
 
-def _route_after_query(state: AgentState) -> list[str]:
+def _route_after_query(state: AgentState) -> str:
     """
-    After query agent: branch into parallel analytics and/or visualization if needed.
+    After query agent: route sequentially.
+    analytics → visualization → END  (visualization always runs after analytics
+    so it can consume analytics_result for richer chart prompts).
     """
     pipeline = state.get("agent_pipeline", ["query"])
     sql_result = state.get("sql_result", [])
 
     if not sql_result:
-        return [END]
+        return END
 
-    next_nodes = []
+    # Analytics always precedes visualization in the pipeline
     if "analytics" in pipeline:
-        next_nodes.append("analytics")
+        return "analytics"
     if "visualization" in pipeline:
-        next_nodes.append("visualization")
+        return "visualization"
+    return END
 
-    return next_nodes if next_nodes else [END]
 
 def _route_after_analytics(state: AgentState) -> str:
-    """After analytics: END."""
+    """
+    After analytics: route to visualization if it is in the pipeline, else END.
+    This is the key change — visualization now always runs AFTER analytics
+    so analytics_result is available in state.
+    """
+    pipeline = state.get("agent_pipeline", [])
+    if "visualization" in pipeline:
+        return "visualization"
     return END
 
 
@@ -337,7 +346,7 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
         },
     )
 
-    # query → [analytics, visualization] | END
+    # query → analytics (sequential) → visualization → END
     graph.add_conditional_edges(
         "query",
         _route_after_query,
@@ -348,8 +357,17 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
         },
     )
 
+    # analytics → visualization (if in pipeline) | END
+    graph.add_conditional_edges(
+        "analytics",
+        _route_after_analytics,
+        {
+            "visualization": "visualization",
+            END: END,
+        },
+    )
+
     # Terminal nodes
-    graph.add_edge("analytics", END)
     graph.add_edge("visualization", END)
     graph.add_edge("performance", END)
     graph.add_edge("report", END)

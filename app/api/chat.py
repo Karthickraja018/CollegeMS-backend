@@ -97,6 +97,7 @@ async def _event_stream(
             "final_response": "",
             "insights": [],
             "recommendations": [],
+            "draft_actions": [],
             "error": None,
             "iterations": 0,
             # Role-scoped context — passed to agents to enforce data access
@@ -247,6 +248,11 @@ async def _event_stream(
         recommendations = result.get("recommendations", [])
         if recommendations:
             yield f"data: {safe_json_dumps({'type': 'recommendations', 'data': recommendations})}\n\n"
+
+        # ── Emit: draft actions ──────────────────────────────────────────────
+        draft_actions = result.get("draft_actions", [])
+        if draft_actions:
+            yield f"data: {safe_json_dumps({'type': 'draft_actions', 'data': draft_actions})}\n\n"
 
         # ── Emit: table data ─────────────────────────────────────────────────
         sql_result = result.get("sql_result", [])

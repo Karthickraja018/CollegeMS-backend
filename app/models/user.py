@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import String, Integer, Boolean, DateTime, func, ForeignKey, Enum as SAEnum, JSON
+from sqlalchemy import String, Integer, Boolean, DateTime, func, ForeignKey, Enum as SAEnum, JSON, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -38,6 +38,11 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), default=UserRole.faculty, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    
+    # Analytics fields (HOD/Principal view)
+    research_output_score: Mapped[int] = mapped_column(Integer, default=0)
+    feedback_score: Mapped[float] = mapped_column(Float, default=0.0)
+
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     preferences: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)

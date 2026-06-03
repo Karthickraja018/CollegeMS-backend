@@ -68,8 +68,8 @@ async def get_at_risk_students(
         risk_clause = "AND s.risk_score >= 60 AND s.risk_score < 80"
     elif risk_level == "medium":
         risk_clause = "AND s.risk_score >= 40 AND s.risk_score < 60"
-    else:
-        risk_clause = "AND s.risk_score >= 40"
+    elif risk_level == "low":
+        risk_clause = "AND s.risk_score < 40"
 
     extra_sql = " ".join(extra_clauses)
 
@@ -172,7 +172,7 @@ async def get_student_profile(
                 COUNT(*) FILTER (WHERE a.status = 'present') AS present,
                 COUNT(*) FILTER (WHERE a.status = 'absent') AS absent,
                 ROUND(COUNT(*) FILTER (WHERE a.status = 'present') * 100.0 / NULLIF(COUNT(*), 0), 1) AS pct
-            FROM attendance a
+            FROM attendance_records a
             WHERE a.student_id = :sid
         """),
         {"sid": student_id},
@@ -186,7 +186,7 @@ async def get_student_profile(
                 COUNT(*) AS total,
                 COUNT(*) FILTER (WHERE a.status = 'present') AS present,
                 ROUND(COUNT(*) FILTER (WHERE a.status = 'present') * 100.0 / NULLIF(COUNT(*), 0), 1) AS pct
-            FROM attendance a
+            FROM attendance_records a
             JOIN subjects sub ON sub.id = a.subject_id
             WHERE a.student_id = :sid
             GROUP BY sub.name, sub.code
@@ -259,6 +259,11 @@ async def get_student_profile(
                 else "low"
             ),
             "factors": risk_factors,
+            "predictions": {
+                "dropout_probability": round(min(risk_score * 0.85, 99.0), 1),
+                "failure_probability": round(min(risk_score * 0.75 + (50 - min(avg_marks, 50)), 99.0), 1),
+                "arrear_probability": round(min(risk_score * 0.6 + (100 - min(att_pct, 100)), 99.0), 1)
+            }
         },
     }
 
@@ -281,7 +286,7 @@ async def get_student_attendance_trend(
                 COUNT(*) FILTER (WHERE a.status = 'present') AS present,
                 COUNT(*) AS total,
                 ROUND(COUNT(*) FILTER (WHERE a.status = 'present') * 100.0 / NULLIF(COUNT(*), 0), 1) AS pct
-            FROM attendance a
+            FROM attendance_records a
             WHERE a.student_id = :sid
             AND a.date >= NOW() - (:months * INTERVAL '1 month')
             GROUP BY TO_CHAR(a.date, 'Mon YYYY'), DATE_TRUNC('month', a.date)
@@ -400,3 +405,115 @@ async def get_student_recommendations(
         })
 
     return {"student_name": name, "risk_score": risk, "recommendations": recs}
+
+from pydantic import BaseModel
+
+class InterventionCreate(BaseModel):
+    action_type: str
+    notes: str | None = None
+
+@router.get("/{student_id}/interventions")
+async def list_student_interventions(
+    student_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List interventions for a student."""
+    await assert_student_access(current_user, student_id, db)
+    
+    r = await db.execute(
+        text("""
+            SELECT i.id, i.action_type, i.status, i.notes, i.created_at, u.full_name as owner_name
+            FROM student_interventions i
+            LEFT JOIN users u ON u.id = i.owner_id
+            WHERE i.student_id = :sid
+            ORDER BY i.created_at DESC
+        """),
+        {"sid": student_id}
+    )
+    rows = r.fetchall()
+    return {"interventions": [dict(zip(r.keys(), row)) for row in rows]}
+
+@router.post("/{student_id}/interventions")
+async def create_student_intervention(
+    student_id: int,
+    intervention: InterventionCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new intervention record for a student."""
+    await assert_student_access(current_user, student_id, db)
+    
+    await db.execute(
+        text("""
+            INSERT INTO student_interventions (student_id, action_type, owner_id, status, notes)
+            VALUES (:student_id, :action_type, :owner_id, 'active', :notes)
+        """),
+        {
+            "student_id": student_id,
+            "action_type": intervention.action_type,
+            "owner_id": current_user.id,
+            "notes": intervention.notes
+        }
+    )
+    return {"status": "success"}
+
+
+@router.get("/{student_id}/weekly-attendance")
+async def get_student_weekly_attendance(
+    student_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Last 7 days attendance, day by day and subject by subject."""
+    await assert_student_access(current_user, student_id, db)
+
+    # Day-by-day for last 7 days
+    r = await db.execute(
+        text("""
+            SELECT
+                a.date,
+                TO_CHAR(a.date, 'Dy') AS day_name,
+                COUNT(*) AS total_classes,
+                COUNT(*) FILTER (WHERE a.status = 'present') AS present,
+                COUNT(*) FILTER (WHERE a.status = 'absent') AS absent
+            FROM attendance_records a
+            WHERE a.student_id = :sid
+            AND a.date >= CURRENT_DATE - INTERVAL '7 days'
+            GROUP BY a.date
+            ORDER BY a.date
+        """),
+        {"sid": student_id},
+    )
+    daily = [
+        {
+            "date": str(row[0]),
+            "day_name": row[1],
+            "total": row[2],
+            "present": row[3],
+            "absent": row[4],
+            "pct": round(row[3] * 100.0 / row[2], 1) if row[2] else 0,
+        }
+        for row in r.fetchall()
+    ]
+
+    # Subject-wise this week
+    r = await db.execute(
+        text("""
+            SELECT
+                sub.name, sub.code,
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE a.status = 'present') AS present,
+                ROUND(COUNT(*) FILTER (WHERE a.status = 'present') * 100.0 / NULLIF(COUNT(*), 0), 1) AS pct
+            FROM attendance_records a
+            JOIN subjects sub ON sub.id = a.subject_id
+            WHERE a.student_id = :sid
+            AND a.date >= CURRENT_DATE - INTERVAL '7 days'
+            GROUP BY sub.name, sub.code
+            ORDER BY pct ASC NULLS LAST
+        """),
+        {"sid": student_id},
+    )
+    subjects = [dict(zip(r.keys(), row)) for row in r.fetchall()]
+
+    return {"daily": daily, "subjects": subjects}

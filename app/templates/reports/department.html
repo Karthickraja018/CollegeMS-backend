@@ -6,16 +6,25 @@
     <style>
         @page {
             size: a4 portrait;
-            @frame header_frame {
-                -pdf-frame-content: header_content;
-                left: 50pt; width: 512pt; top: 50pt; height: 40pt;
+            margin: 2cm 1.5cm 2cm 1.5cm;
+            @top-center {
+                content: "CollegeMS AI Reporting System";
+                font-size: 9pt;
+                color: #14b8a6;
+                font-family: Helvetica, Arial, sans-serif;
+                font-weight: bold;
             }
-            @frame content_frame {
-                left: 50pt; width: 512pt; top: 90pt; height: 632pt;
+            @bottom-right {
+                content: "Page " counter(page) " of " counter(pages);
+                font-size: 8pt;
+                color: #94a3b8;
+                font-family: Helvetica, Arial, sans-serif;
             }
-            @frame footer_frame {
-                -pdf-frame-content: footer_content;
-                left: 50pt; width: 512pt; top: 772pt; height: 20pt;
+            @bottom-left {
+                content: "{{ title }}";
+                font-size: 8pt;
+                color: #94a3b8;
+                font-family: Helvetica, Arial, sans-serif;
             }
         }
         body {
@@ -23,91 +32,94 @@
             font-size: 10pt;
             color: #333333;
         }
-        h1, h2, h3 {
-            color: #1e293b;
-        }
         h1 {
-            font-size: 24pt;
+            font-size: 20pt;
             color: #6366f1;
-            margin-bottom: 5px;
+            margin-bottom: 4px;
+            margin-top: 0;
         }
         h2 {
-            font-size: 14pt;
+            font-size: 12pt;
+            color: #1e293b;
             margin-top: 20px;
-            margin-bottom: 10px;
-            border-bottom: 1px solid #e2e8f0;
-            padding-bottom: 4px;
+            margin-bottom: 8px;
+            border-bottom: 1.5px solid #6366f1;
+            padding-bottom: 3px;
         }
         .subtitle {
             color: #64748b;
-            font-size: 10pt;
-            margin-bottom: 20px;
+            font-size: 9pt;
+            margin-bottom: 16px;
+        }
+        .header-rule {
+            border: none;
+            border-top: 2px solid #6366f1;
+            margin: 8px 0 20px 0;
         }
         table {
             width: 100%;
             border-collapse: collapse;
-            margin-bottom: 15px;
-        }
-        th, td {
-            border: 1px solid #cbd5e1;
-            padding: 8px;
-            text-align: left;
+            margin-bottom: 12px;
             font-size: 9pt;
         }
         th {
             background-color: #6366f1;
             color: #ffffff;
             font-weight: bold;
+            padding: 7px 8px;
+            text-align: left;
         }
-        tr:nth-child(even) {
+        td {
+            border: 1px solid #e2e8f0;
+            padding: 6px 8px;
+            text-align: left;
+        }
+        tr:nth-child(even) td {
             background-color: #f8fafc;
         }
         .insight-box {
             background-color: #f1f5f9;
             border-left: 4px solid #6366f1;
-            padding: 10px;
-            margin-bottom: 20px;
+            padding: 10px 14px;
+            margin-bottom: 18px;
         }
-        .text-right {
-            text-align: right;
+        .insight-box p {
+            margin: 0 0 8px 0;
         }
-        .page-number:before {
-            content: counter(page);
+        .insight-box ul {
+            margin: 0;
+            padding-left: 18px;
         }
-        .page-count:before {
-            content: counter(pages);
+        .insight-box li {
+            margin-bottom: 3px;
+        }
+        .no-data {
+            color: #94a3b8;
+            font-style: italic;
+            padding: 6px 0;
         }
     </style>
 </head>
 <body>
-    <div id="header_content">
-        <div style="font-size: 12pt; font-weight: bold; color: #14b8a6;">CollegeMS AI Reporting System</div>
-        <hr style="border-color: #6366f1;">
-    </div>
-    <div id="footer_content" style="text-align: right; color: #94a3b8; font-size: 8pt;">
-        Page <pdf:pagenumber> of <pdf:pagecount>
-    </div>
 
     <h1>{{ title }}</h1>
+    <hr class="header-rule">
     <div class="subtitle">Generated on {{ date }}</div>
 
     <div class="insight-box">
-        <h2>Executive Summary (AI Insights)</h2>
+        <h2 style="margin-top:0; border-bottom: none;">Executive Summary (AI Insights)</h2>
         <p>{{ insights.summary }}</p>
+        {% if insights.key_points %}
         <ul>
             {% for point in insights.key_points %}
             <li>{{ point }}</li>
             {% endfor %}
         </ul>
+        {% endif %}
     </div>
-
-    {% if image_path %}
-    <div style="text-align: center; margin: 20px 0;">
-        <img src="{{ image_path }}" width="500" height="250" />
-    </div>
-    {% endif %}
 
     <h2>1. Department Profile</h2>
+    {% if data.profile %}
     <table>
         <tr>
             <th>Department Name</th>
@@ -124,11 +136,15 @@
         </tr>
         {% endfor %}
     </table>
+    {% else %}
+    <p class="no-data">No department profile data available.</p>
+    {% endif %}
 
     <h2>2. Student Strength</h2>
+    {% if data.strength %}
     <table>
         <tr>
-            <th>Program</th>
+            <th>Department</th>
             <th>Semester</th>
             <th>Total Strength</th>
             <th>Male</th>
@@ -136,7 +152,7 @@
         </tr>
         {% for row in data.strength %}
         <tr>
-            <td>{{ row.program_id }}</td>
+            <td>{{ row.department_name }}</td>
             <td>Semester {{ row.current_semester }}</td>
             <td>{{ row.total_strength }}</td>
             <td>{{ row.male_count }}</td>
@@ -144,8 +160,12 @@
         </tr>
         {% endfor %}
     </table>
+    {% else %}
+    <p class="no-data">No student strength data available.</p>
+    {% endif %}
 
     <h2>3. Subject Performance</h2>
+    {% if data.performance %}
     <table>
         <tr>
             <th>Subject Code</th>
@@ -166,8 +186,12 @@
         </tr>
         {% endfor %}
     </table>
+    {% else %}
+    <p class="no-data">No subject performance data available.</p>
+    {% endif %}
 
     <h2>4. Placement Summary</h2>
+    {% if data.placement %}
     <table>
         <tr>
             <th>Company</th>
@@ -184,6 +208,9 @@
         </tr>
         {% endfor %}
     </table>
+    {% else %}
+    <p class="no-data">No placement data available.</p>
+    {% endif %}
 
 </body>
 </html>

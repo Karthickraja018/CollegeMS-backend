@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User, UserRole
-from app.models.report import Report, ReportType, ReportFormat
+from app.models.report import Report, ReportType, ReportFormat, ReportStatus
 from app.config import get_settings
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -18,7 +18,7 @@ settings = get_settings()
 
 
 class GenerateReportRequest(BaseModel):
-    report_type: ReportType
+    report_type: str
     format: ReportFormat = ReportFormat.pdf
     parameters: dict = {}
 
@@ -36,15 +36,22 @@ async def generate_report(
     from app.agents.report_agent import report_agent_node
     from app.agents.state import AgentState
 
-    query = f"Generate a {body.report_type.value} report"
-    if body.parameters.get("department"):
-        query += f" for {body.parameters['department']} department"
-    if body.parameters.get("semester"):
-        query += f" semester {body.parameters['semester']}"
+    # Determine department filter (if any)
+    dept_name = None
+    if current_user.role == UserRole.hod and current_user.department_id:
+        # HOD can only see their own department
+        from app.models.department import Department
+        from sqlalchemy import select
+        dept = await db.scalar(select(Department).where(Department.id == current_user.department_id))
+        if dept:
+            dept_name = dept.name
+    else:
+        dept_name = body.parameters.get("department")
 
     state: AgentState = {
-        "messages": [("user", query)],
-        "user_query": query,
+        "messages": [],
+        "user_query": body.report_type,  # Pass report_type down directly
+        "intent": {"entities": {"departments": [dept_name] if dept_name else []}},
         "agent_used": "report",
         "sql_result": [],
         "chart_spec": None,
@@ -62,13 +69,16 @@ async def generate_report(
 
     # Save report record to DB
     import json
+        
     report = Report(
-        title=f"{body.report_type.value.replace('_', ' ').title()} Report",
+        college_id=current_user.college_id,
+        title=f"{body.report_type.replace('_', ' ').title()} Report",
         report_type=body.report_type,
         format=body.format,
         file_path=result.get("report_url"),
         parameters=json.dumps(body.parameters),
-        generated_by_id=current_user.id,
+        generated_by=current_user.id,
+        status=ReportStatus.completed,
     )
     db.add(report)
     await db.commit()
@@ -77,7 +87,7 @@ async def generate_report(
     return {
         "id": report.id,
         "title": report.title,
-        "report_type": report.report_type.value,
+        "report_type": body.report_type,
         "download_url": result.get("report_url"),
         "content_preview": result.get("final_response", "")[:500],
     }
@@ -98,8 +108,8 @@ async def list_reports(
         {
             "id": r.id,
             "title": r.title,
-            "report_type": r.report_type.value,
-            "format": r.format.value,
+            "report_type": r.report_type,
+            "format": r.format,
             "created_at": r.created_at.isoformat(),
             "download_url": f"/api/reports/download/{os.path.basename(r.file_path)}" if r.file_path else None,
         }
@@ -110,9 +120,9 @@ async def list_reports(
 @router.get("/download/{filename}")
 async def download_report(
     filename: str,
-    current_user: User = Depends(get_current_user),
+    download: bool = False,
 ):
-    """Download a generated report file."""
+    """Download or view a generated report file."""
     # Security: only allow alphanumeric filenames with safe extensions
     import re
     if not re.match(r"^[\w\-]+\.(pdf|docx)$", filename):
@@ -125,4 +135,6 @@ async def download_report(
     media_type = "application/pdf" if filename.endswith(".pdf") else (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-    return FileResponse(filepath, media_type=media_type, filename=filename)
+    if download:
+        return FileResponse(filepath, media_type=media_type, filename=filename)
+    return FileResponse(filepath, media_type=media_type, content_disposition_type="inline")

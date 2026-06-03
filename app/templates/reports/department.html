@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{{ title }}</title>
+    <style>
+        @page {
+            size: a4 portrait;
+            @frame header_frame {
+                -pdf-frame-content: header_content;
+                left: 50pt; width: 512pt; top: 50pt; height: 40pt;
+            }
+            @frame content_frame {
+                left: 50pt; width: 512pt; top: 90pt; height: 632pt;
+            }
+            @frame footer_frame {
+                -pdf-frame-content: footer_content;
+                left: 50pt; width: 512pt; top: 772pt; height: 20pt;
+            }
+        }
+        body {
+            font-family: Helvetica, Arial, sans-serif;
+            font-size: 10pt;
+            color: #333333;
+        }
+        h1, h2, h3 {
+            color: #1e293b;
+        }
+        h1 {
+            font-size: 24pt;
+            color: #6366f1;
+            margin-bottom: 5px;
+        }
+        h2 {
+            font-size: 14pt;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 4px;
+        }
+        .subtitle {
+            color: #64748b;
+            font-size: 10pt;
+            margin-bottom: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 15px;
+        }
+        th, td {
+            border: 1px solid #cbd5e1;
+            padding: 8px;
+            text-align: left;
+            font-size: 9pt;
+        }
+        th {
+            background-color: #6366f1;
+            color: #ffffff;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #f8fafc;
+        }
+        .insight-box {
+            background-color: #f1f5f9;
+            border-left: 4px solid #6366f1;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        .text-right {
+            text-align: right;
+        }
+        .page-number:before {
+            content: counter(page);
+        }
+        .page-count:before {
+            content: counter(pages);
+        }
+    </style>
+</head>
+<body>
+    <div id="header_content">
+        <div style="font-size: 12pt; font-weight: bold; color: #14b8a6;">CollegeMS AI Reporting System</div>
+        <hr style="border-color: #6366f1;">
+    </div>
+    <div id="footer_content" style="text-align: right; color: #94a3b8; font-size: 8pt;">
+        Page <pdf:pagenumber> of <pdf:pagecount>
+    </div>
+
+    <h1>{{ title }}</h1>
+    <div class="subtitle">Generated on {{ date }}</div>
+
+    <div class="insight-box">
+        <h2>Executive Summary (AI Insights)</h2>
+        <p>{{ insights.summary }}</p>
+        <ul>
+            {% for point in insights.key_points %}
+            <li>{{ point }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    {% if image_path %}
+    <div style="text-align: center; margin: 20px 0;">
+        <img src="{{ image_path }}" width="500" height="250" />
+    </div>
+    {% endif %}
+
+    <h2>1. Department Profile</h2>
+    <table>
+        <tr>
+            <th>Department Name</th>
+            <th>Code</th>
+            <th>Total Students</th>
+            <th>Total Faculty</th>
+        </tr>
+        {% for row in data.profile %}
+        <tr>
+            <td>{{ row.department_name }}</td>
+            <td>{{ row.department_code }}</td>
+            <td>{{ row.total_students }}</td>
+            <td>{{ row.total_faculty }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <h2>2. Student Strength</h2>
+    <table>
+        <tr>
+            <th>Program</th>
+            <th>Semester</th>
+            <th>Total Strength</th>
+            <th>Male</th>
+            <th>Female</th>
+        </tr>
+        {% for row in data.strength %}
+        <tr>
+            <td>{{ row.program_id }}</td>
+            <td>Semester {{ row.current_semester }}</td>
+            <td>{{ row.total_strength }}</td>
+            <td>{{ row.male_count }}</td>
+            <td>{{ row.female_count }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <h2>3. Subject Performance</h2>
+    <table>
+        <tr>
+            <th>Subject Code</th>
+            <th>Subject Name</th>
+            <th>Appeared</th>
+            <th>Passed</th>
+            <th>Pass %</th>
+            <th>Avg Marks %</th>
+        </tr>
+        {% for row in data.performance %}
+        <tr>
+            <td>{{ row.subject_code }}</td>
+            <td>{{ row.subject_name }}</td>
+            <td>{{ row.students_appeared }}</td>
+            <td>{{ row.students_passed }}</td>
+            <td>{{ row.pass_pct }}%</td>
+            <td>{{ row.avg_marks_pct }}%</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <h2>4. Placement Summary</h2>
+    <table>
+        <tr>
+            <th>Company</th>
+            <th>Role</th>
+            <th>Package (LPA)</th>
+            <th>Offers</th>
+        </tr>
+        {% for row in data.placement %}
+        <tr>
+            <td>{{ row.company_name }}</td>
+            <td>{{ row.role_offered }}</td>
+            <td>{{ row.package_lpa }}</td>
+            <td>{{ row.total_offers }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+</body>
+</html>

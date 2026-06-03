@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{{ title }}</title>
+    <style>
+        @page {
+            size: a4 portrait;
+            @frame header_frame {
+                -pdf-frame-content: header_content;
+                left: 50pt; width: 512pt; top: 50pt; height: 40pt;
+            }
+            @frame content_frame {
+                left: 50pt; width: 512pt; top: 90pt; height: 632pt;
+            }
+            @frame footer_frame {
+                -pdf-frame-content: footer_content;
+                left: 50pt; width: 512pt; top: 772pt; height: 20pt;
+            }
+        }
+        body {
+            font-family: Helvetica, Arial, sans-serif;
+            font-size: 10pt;
+            color: #333333;
+        }
+        h1, h2, h3 {
+            color: #1e293b;
+        }
+        h1 {
+            font-size: 24pt;
+            color: #ef4444;
+            margin-bottom: 5px;
+        }
+        h2 {
+            font-size: 14pt;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 4px;
+        }
+        .subtitle {
+            color: #64748b;
+            font-size: 10pt;
+            margin-bottom: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 15px;
+        }
+        th, td {
+            border: 1px solid #cbd5e1;
+            padding: 8px;
+            text-align: left;
+            font-size: 9pt;
+        }
+        th {
+            background-color: #ef4444;
+            color: #ffffff;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #fef2f2;
+        }
+        .insight-box {
+            background-color: #fef2f2;
+            border-left: 4px solid #ef4444;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        .text-right {
+            text-align: right;
+        }
+        .page-number:before {
+            content: counter(page);
+        }
+        .page-count:before {
+            content: counter(pages);
+        }
+    </style>
+</head>
+<body>
+    <div id="header_content">
+        <div style="font-size: 12pt; font-weight: bold; color: #14b8a6;">CollegeMS AI Reporting System</div>
+        <hr style="border-color: #ef4444;">
+    </div>
+    <div id="footer_content" style="text-align: right; color: #94a3b8; font-size: 8pt;">
+        Page <pdf:pagenumber> of <pdf:pagecount>
+    </div>
+
+    <h1>{{ title }}</h1>
+    <div class="subtitle">Generated on {{ date }}</div>
+
+    <div class="insight-box">
+        <h2>Executive Summary (AI Insights)</h2>
+        <p>{{ insights.summary }}</p>
+        <ul>
+            {% for point in insights.key_points %}
+            <li>{{ point }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <h2>Students At Risk (Attendance < 75%)</h2>
+    <table>
+        <tr>
+            <th>Register No</th>
+            <th>Student Name</th>
+            <th>Semester</th>
+            <th>Total Classes</th>
+            <th>Days Present</th>
+            <th>Attendance %</th>
+        </tr>
+        {% for row in data.attendance %}
+        {% if row.attendance_pct < 75 %}
+        <tr>
+            <td>{{ row.register_number }}</td>
+            <td>{{ row.student_name }}</td>
+            <td>{{ row.current_semester }}</td>
+            <td>{{ row.total_classes }}</td>
+            <td>{{ row.days_present }}</td>
+            <td style="color: #ef4444; font-weight: bold;">{{ row.attendance_pct }}%</td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+    </table>
+</body>
+</html>

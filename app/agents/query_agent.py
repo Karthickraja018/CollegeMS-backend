@@ -20,10 +20,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.state import AgentState
 from app.llm.provider_factory import get_llm_provider
 from app.utils.sql_validator import validate_sql, SQLValidationError
+from langchain_core.callbacks.manager import adispatch_custom_event
 from app.prompts import (
     QUERY_SYSTEM_PROMPT_V2,
-    QUERY_PLANNER_PROMPT,
     INSIGHT_GENERATION_PROMPT,
+)
+import time
+
+from app.agents.nlp_sql_mcp.tools.db_tools import (
+    tool_search_schema,
+    tool_sample_values,
+    tool_execute_sql
 )
 
 MAX_RETRIES = 3
@@ -63,16 +70,7 @@ def _extract_sql(llm_response: str) -> str:
     raise ValueError("Could not extract a valid SQL SELECT statement from the response.")
 
 
-def _extract_plan_steps(plan_text: str) -> list[str]:
-    """Parse numbered plan steps from LLM planning response."""
-    steps = []
-    # Match lines like "Step 1:", "1.", "1)" etc.
-    for line in plan_text.splitlines():
-        line = line.strip()
-        match = re.match(r"^(?:step\s+)?(\d+)[:.)\-]\s+(.+)$", line, re.IGNORECASE)
-        if match:
-            steps.append(match.group(2).strip())
-    return steps if steps else [plan_text[:200]]
+
 
 
 def _extract_insight_json(text: str) -> Optional[dict]:
@@ -88,74 +86,43 @@ def _extract_insight_json(text: str) -> Optional[dict]:
     return None
 
 
-async def _generate_query_plan(
-    llm, query: str, intent: dict
-) -> list[str]:
-    """
-    Step 1: Generate a reasoning plan before writing SQL.
-    Returns a list of step strings.
-    """
-    enriched_query = intent.get("enriched_query", query)
-    entities = intent.get("entities", {})
-    query_type = intent.get("query_type", "descriptive")
-
-    plan_request = (
-        f"Question: \"{enriched_query}\"\n"
-        f"Query type: {query_type}\n"
-        f"Departments involved: {entities.get('departments', [])}\n"
-        f"Metrics needed: {entities.get('metrics', [])}\n"
-        f"Time reference: {entities.get('time', 'none')}\n\n"
-        "Create a numbered execution plan for answering this question."
-    )
-
-    messages = [{"role": "user", "content": plan_request}]
-    try:
-        plan_text = await llm.generate(
-            messages=messages,
-            system_prompt=QUERY_PLANNER_PROMPT,
-            temperature=0.0,
-        )
-        plan_text = _strip_thinking(plan_text)
-        return _extract_plan_steps(plan_text)
-    except Exception:
-        return [f"Retrieve data to answer: {enriched_query}"]
-
-
 async def _generate_sql(
     llm,
     query: str,
     intent: dict,
-    plan: list[str],
+    schema_context: str,
+    sample_values_result: str,
     previous_error: Optional[str] = None,
 ) -> str:
     """
-    Step 2: Generate SQL based on the plan and intent.
-    If previous_error is provided, this is a retry with correction context.
+    Generate SQL based on the intent, schema, and samples.
     """
     enriched_query = intent.get("enriched_query", query)
-    entities = intent.get("entities", {})
-    plan_str = "\n".join(f"  {i+1}. {step}" for i, step in enumerate(plan))
+    role = "college user"
 
     correction_note = ""
     if previous_error:
         correction_note = (
             f"\n\nPREVIOUS SQL FAILED with this error:\n{previous_error}\n"
-            "Fix the SQL to resolve this error. Common fixes:\n"
-            "- Add ::numeric cast before ROUND()\n"
-            "- Check table/column names match the schema exactly\n"
-            "- Use NULLIF() for division\n"
-            "- Verify JOIN conditions\n"
+            "Fix the SQL to resolve this error."
         )
 
+    entities = intent.get("entities", {})
+    query_type = intent.get("query_type", "descriptive")
+
     sql_request = (
-        f"User question: \"{enriched_query}\"\n"
-        f"Query type: {intent.get('query_type', 'descriptive')}\n"
+        f"You are a PostgreSQL expert.\n"
+        f"User Role: {role}\n"
+        f"Relevant Schema:\n{schema_context}\n"
+        f"Known Values:\n{sample_values_result}\n\n"
+        f"Question: \"{enriched_query}\"\n"
+        f"Query type: {query_type}\n"
         f"Departments: {entities.get('departments', [])}\n"
         f"Metrics needed: {entities.get('metrics', [])}\n"
-        f"Time filter: {entities.get('time', 'none')}\n\n"
-        f"Execution plan:\n{plan_str}\n"
+        f"Time filter: {entities.get('time', 'none')}\n"
         f"{correction_note}\n"
-        "Write the SQL query to execute this plan."
+        "Generate a single read-only PostgreSQL SELECT query.\n"
+        "Return SQL only."
     )
 
     messages = [{"role": "user", "content": sql_request}]
@@ -163,6 +130,7 @@ async def _generate_sql(
         messages=messages,
         system_prompt=QUERY_SYSTEM_PROMPT_V2,
         temperature=0.05,
+        model_name="llama-3.3-70b-versatile"
     )
     return _extract_sql(response)
 
@@ -189,20 +157,24 @@ async def _generate_insights(
     entities = intent.get("entities", {})
 
     insight_request = (
+        f"Summarize results.\n"
+        f"Provide:\n"
+        f"* Key findings\n"
+        f"* Trends\n"
+        f"* Notable observations\n\n"
+        f"Maximum 150 words.\n\n"
         f"User asked: \"{query}\"\n"
-        f"Query type: {query_type}\n"
-        f"Departments: {entities.get('departments', [])}\n"
         f"Results ({len(data)} total rows, showing {len(data_preview)}):\n"
-        f"{json.dumps(data_preview, indent=2, default=str)}\n\n"
-        "Generate insights and summary."
+        f"{json.dumps(data_preview, indent=2, default=str)}"
     )
 
     messages = [{"role": "user", "content": insight_request}]
     try:
         insight_text = await llm.generate(
             messages=messages,
-            system_prompt=INSIGHT_GENERATION_PROMPT,
+            system_prompt="You are a data analyst.",
             temperature=0.3,
+            model_name="gemma2-9b-it"
         )
         insight_text = _strip_thinking(insight_text)
         result = _extract_insight_json(insight_text)
@@ -236,129 +208,149 @@ async def _execute_sql(db: AsyncSession, sql: str) -> tuple[list[dict], Optional
 
 async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
     """
-    LangGraph node: Query Agent V2.
-    Full reasoning pipeline: plan → SQL → validate → execute → retry → insights.
+    LangGraph node: Query Agent V2 optimized.
+    MCP tools integration, no planning layer.
     """
+    start_time = time.time()
+    timing_metrics = state.get("timing_metrics", {})
+    
     llm = get_llm_provider()
     query = state.get("user_query", "")
     intent = state.get("intent", {})
 
-    # Use enriched query if semantic layer resolved references
     effective_query = intent.get("enriched_query", query) or query
+    entities = intent.get("entities", {})
 
-    # ── Step 1: Generate Query Plan ─────────────────────────────────────────
-    plan = await _generate_query_plan(llm, effective_query, intent)
+    await adispatch_custom_event("status_update", {"status": "Discovering Schema"})
 
-    # ── Step 2–4: SQL Generation → Validation → Execution (with retries) ───
+    # ── Step 1: Schema Lookup ────────────────────────────────────────────────
+    t0 = time.time()
+    schema_context = tool_search_schema(effective_query)
+    timing_metrics["schema_lookup_time"] = round(time.time() - t0, 2)
+
+    # ── Step 2: Sample Values ────────────────────────────────────────────────
+    sample_values_res = {}
+    if entities.get("departments"):
+        dept_samples = await tool_sample_values("departments", "code", limit=10)
+        sample_values_res["departments"] = json.loads(dept_samples).get("values", [])
+    sample_values_result = json.dumps(sample_values_res)
+
+    # ── Step 3-5: SQL Generation, Validation, Execution (with retries) ───────
     sql_result: list[dict] = []
     last_error: Optional[str] = None
     final_sql: Optional[str] = None
+    
+    gen_time_total = 0.0
+    val_time_total = 0.0
+    exec_time_total = 0.0
 
     for attempt in range(MAX_RETRIES):
-        # Generate SQL (with error context on retries)
+        # Generate SQL
+        await adispatch_custom_event("status_update", {"status": "Generating SQL"})
+        t0 = time.time()
         try:
             raw_sql = await _generate_sql(
                 llm,
                 effective_query,
                 intent,
-                plan,
+                schema_context,
+                sample_values_result,
                 previous_error=last_error if attempt > 0 else None,
             )
         except ValueError as e:
             last_error = str(e)
+            gen_time_total += time.time() - t0
             if attempt == MAX_RETRIES - 1:
-                return {
-                    "agent_used": "query",
-                    "query_plan": plan,
-                    "sql_result": [],
-                    "insights": [],
-                    "recommendations": [],
-                    "error": str(e),
-                    "final_response": (
-                        "I had difficulty formulating a precise database query for your request. "
-                        "Could you rephrase it with more specific details?"
-                    ),
-                }
+                timing_metrics["sql_generation_time"] = round(gen_time_total, 2)
+                return _error_response(state, "query", str(e), timing_metrics)
             continue
         except Exception as e:
             last_error = f"LLM generation failed: {str(e)}"
+            gen_time_total += time.time() - t0
             if attempt == MAX_RETRIES - 1:
-                return {
-                    "agent_used": "query",
-                    "query_plan": plan,
-                    "sql_result": [],
-                    "insights": [],
-                    "recommendations": [],
-                    "error": last_error,
-                    "final_response": f"I encountered an error generating the query: {str(e)}",
-                }
+                timing_metrics["sql_generation_time"] = round(gen_time_total, 2)
+                return _error_response(state, "query", last_error, timing_metrics)
             continue
+        gen_time_total += time.time() - t0
 
-        # Validate SQL (SELECT-only safety check)
+        # Validate SQL
+        t0 = time.time()
         try:
             safe_sql = validate_sql(raw_sql)
+            val_time_total += time.time() - t0
         except SQLValidationError as e:
             last_error = f"SQL safety validation failed: {str(e)}"
+            val_time_total += time.time() - t0
             if attempt == MAX_RETRIES - 1:
-                return {
-                    "agent_used": "query",
-                    "query_plan": plan,
-                    "sql_result": [],
-                    "insights": [],
-                    "recommendations": [],
-                    "error": last_error,
-                    "final_response": "The generated query was rejected for safety reasons. Please try a different question.",
-                }
+                timing_metrics["validation_time"] = round(val_time_total, 2)
+                return _error_response(state, "query", last_error, timing_metrics)
             continue
 
-        # Execute against DB
-        rows, db_error = await _execute_sql(db, safe_sql)
-
-        if db_error:
-            last_error = f"Database execution error: {db_error}"
+        # Execute against DB using MCP tool
+        await adispatch_custom_event("status_update", {"status": "Executing Query"})
+        t0 = time.time()
+        exec_json = await tool_execute_sql(safe_sql, {})
+        exec_res = json.loads(exec_json)
+        exec_time_total += time.time() - t0
+        
+        if exec_res.get("error"):
+            last_error = f"Database execution error: {exec_res.get('message')}"
             if attempt == MAX_RETRIES - 1:
-                return {
-                    "agent_used": "query",
-                    "query_plan": plan,
-                    "sql_result": [],
-                    "insights": [],
-                    "recommendations": [],
-                    "error": last_error,
-                    "final_response": (
-                        f"I generated a valid query but it encountered a database error. "
-                        f"Details: {db_error}"
-                    ),
-                }
-            # Loop back with error for LLM to correct
+                timing_metrics["execution_time"] = round(exec_time_total, 2)
+                return _error_response(state, "query", last_error, timing_metrics)
             continue
 
         # Success!
-        sql_result = rows
+        columns = exec_res.get("columns", [])
+        rows = exec_res.get("rows", [])
+        sql_result = [dict(zip(columns, row)) for row in rows]
         final_sql = safe_sql
         last_error = None
         break
+        
+    timing_metrics["sql_generation_time"] = round(gen_time_total, 2)
+    timing_metrics["validation_time"] = round(val_time_total, 2)
+    timing_metrics["execution_time"] = round(exec_time_total, 2)
 
-    # ── Step 5: Generate Insights ────────────────────────────────────────────
+    # ── Step 6: Generate Insights ────────────────────────────────────────────
+    await adispatch_custom_event("status_update", {"status": "Generating Insights"})
+    t0 = time.time()
     insight_data = await _generate_insights(llm, effective_query, sql_result, intent)
+    timing_metrics["insight_time"] = round(time.time() - t0, 2)
 
     summary = insight_data.get("summary", "")
     insights = insight_data.get("insights", [])
     recommendations = insight_data.get("recommendations", [])
 
-    # Build the final human-readable response
     if summary:
         final_response = summary
     elif sql_result:
         final_response = f"Found {len(sql_result)} records matching your query."
     else:
         final_response = "No records were found matching your query."
+        
+    timing_metrics["total_time"] = round(time.time() - start_time, 2)
 
     return {
         "agent_used": "query",
-        "query_plan": plan,
+        "query_plan": [],
         "sql_result": sql_result,
         "insights": insights,
         "recommendations": recommendations,
         "final_response": final_response,
         "error": None,
+        "timing_metrics": timing_metrics,
+    }
+
+
+def _error_response(state: AgentState, agent: str, error: str, timing_metrics: dict) -> dict:
+    return {
+        "agent_used": agent,
+        "query_plan": [],
+        "sql_result": [],
+        "insights": [],
+        "recommendations": [],
+        "error": error,
+        "final_response": f"Encountered an error: {error}",
+        "timing_metrics": timing_metrics,
     }

@@ -354,6 +354,7 @@ async def performance_agent_node(state: AgentState, db: AsyncSession) -> dict:
             messages=messages,
             system_prompt=PERFORMANCE_SYSTEM_PROMPT_V2,
             temperature=0.3,
+            model_name="llama-3.3-70b-versatile"
         )
         llm_analysis = _strip_thinking(llm_analysis)
     except Exception as e:

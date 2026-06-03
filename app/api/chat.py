@@ -109,13 +109,30 @@ async def _event_stream(
         # Run the entire Graph within the DB session context
         async with AsyncSessionLocal() as db:
             graph = build_supervisor_graph(db)
-            async for output in graph.astream(initial_state):
-                for node_name, state in output.items():
-                    current_state = state
-                    if node_name == "classify":
-                        agent_used = state.get("agent_used", "query")
-                        pipeline = state.get("agent_pipeline", [agent_used])
+            async for event in graph.astream_events(initial_state, version="v2"):
+                kind = event["event"]
+                name = event["name"]
+
+                if kind == "on_custom_event" and name == "status_update":
+                    status = event["data"].get("status")
+                    if status:
+                        yield f"data: {safe_json_dumps({'type': 'status', 'status': status})}\n\n"
+                        
+                elif kind == "on_chain_end":
+                    output = event["data"].get("output")
+                    if not output or not isinstance(output, dict):
+                        continue
+
+                    # If this is the classify node ending, emit the 'agent' event
+                    if name == "classify":
+                        agent_used = output.get("agent_used", "query")
+                        pipeline = output.get("agent_pipeline", [agent_used])
                         yield f"data: {safe_json_dumps({'type': 'agent', 'agent': agent_used, 'pipeline': pipeline})}\n\n"
+                        current_state.update(output)
+                        
+                    # If this is any other top-level agent node or the whole graph
+                    elif name in ["query", "analytics", "performance", "report", "LangGraph"]:
+                        current_state.update(output)
 
         # The DB session is now closed! The connection is returned to the pool.
         result = current_state

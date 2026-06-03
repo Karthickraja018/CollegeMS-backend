@@ -46,6 +46,9 @@ class AgentState(TypedDict):
     # ── Loop guard ──────────────────────────────────────────────────────────
     iterations: int
 
+    # ── Timing Metrics (V3) ─────────────────────────────────────────────────
+    timing_metrics: dict
+
     # ── Role-Scoped Context (V2.1) ───────────────────────────────────────────
     # These fields are injected by the chat endpoint from the authenticated user.
     # All agents MUST append these SQL clauses to their queries.

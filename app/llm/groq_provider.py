@@ -34,6 +34,7 @@ class GroqProvider(BaseLLMProvider):
         system_prompt: str = "",
         temperature: float = 0.2,
         max_tokens: int = 1024,
+        model_name: str | None = None,
     ) -> str:
         formatted_messages = []
         if system_prompt:
@@ -44,7 +45,7 @@ class GroqProvider(BaseLLMProvider):
             formatted_messages.append({"role": role, "content": msg.get("content", "")})
 
         response = await self._client.chat.completions.create(
-            model=self._model_name,
+            model=model_name or self._model_name,
             messages=formatted_messages,
             temperature=temperature,
             max_completion_tokens=max_tokens,
@@ -58,6 +59,7 @@ class GroqProvider(BaseLLMProvider):
         system_prompt: str = "",
         temperature: float = 0.2,
         max_tokens: int = 8192,
+        model_name: str | None = None,
     ) -> AsyncIterator[str]:
         formatted_messages = []
         if system_prompt:
@@ -68,7 +70,7 @@ class GroqProvider(BaseLLMProvider):
             formatted_messages.append({"role": role, "content": msg.get("content", "")})
 
         stream_response = await self._client.chat.completions.create(
-            model=self._model_name,
+            model=model_name or self._model_name,
             messages=formatted_messages,
             temperature=temperature,
             max_completion_tokens=max_tokens,

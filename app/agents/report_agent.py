@@ -238,6 +238,7 @@ async def report_agent_node(state: AgentState, db: AsyncSession) -> dict:
             system_prompt=REPORT_SYSTEM_PROMPT_V2,
             temperature=0.3,
             max_tokens=8192,
+            model_name="llama-3.3-70b-versatile"
         )
         report_content = _strip_thinking(report_content)
     except Exception as e:

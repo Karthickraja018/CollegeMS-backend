@@ -16,6 +16,7 @@ class BaseLLMProvider(ABC):
         system_prompt: str = "",
         temperature: float = 0.2,
         max_tokens: int = 8192,
+        model_name: str | None = None,
     ) -> str:
         """Generate a complete response (non-streaming)."""
         ...
@@ -27,6 +28,7 @@ class BaseLLMProvider(ABC):
         system_prompt: str = "",
         temperature: float = 0.2,
         max_tokens: int = 8192,
+        model_name: str | None = None,
     ) -> AsyncIterator[str]:
         """Stream response tokens one chunk at a time."""
         ...

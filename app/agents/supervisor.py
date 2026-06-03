@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from functools import partial
 
 from langgraph.graph import StateGraph, START, END
 from sqlalchemy.ext.asyncio import AsyncSession
+from langchain_core.callbacks.manager import adispatch_custom_event
 
 from app.agents.state import AgentState
 from app.agents.semantic_layer import semantic_layer
@@ -105,22 +107,29 @@ def _extract_memory_context(conversation_history: list) -> dict:
 
 async def _classify_intent(state: AgentState) -> dict:
     """
-    Classify user intent using the Supervisor LLM.
-    Returns structured intent dict with agent pipeline decision.
+    Classify user intent using Rule-Based Routing + LLM Fallback.
     """
+    await adispatch_custom_event("status_update", {"status": "Understanding Question"})
+    start_time = time.time()
     llm = get_llm_provider()
     iterations = state.get("iterations", 0)
 
+    # Initialize timing metrics if not exists
+    timing_metrics = state.get("timing_metrics", {})
+
     # Guard against infinite loops
     if iterations >= 4:
+        timing_metrics["supervisor_time"] = time.time() - start_time
         return {
             "intent": {"agent_pipeline": ["query"], "primary_agent": "query", "enriched_query": state.get("user_query", "")},
             "agent_used": "query",
             "agent_pipeline": ["query"],
             "iterations": iterations + 1,
+            "timing_metrics": timing_metrics,
         }
 
     query = state.get("user_query", "")
+    query_lower = query.lower()
     messages_history = state.get("messages", [])
     memory_context = state.get("memory_context", {})
 
@@ -130,95 +139,92 @@ async def _classify_intent(state: AgentState) -> dict:
 
     # ── Semantic enrichment (fast, no LLM needed) ───────────────────────────
     enrichment = semantic_layer.enrich_query(query, memory_context)
+    enriched_query = enrichment["enriched_query"] or query
 
-    # ── LLM-based intent classification ────────────────────────────────────
-    # Feed the enriched query + context to the supervisor LLM
-    context_note = ""
-    if memory_context.get("last_department"):
-        context_note = f"\n[Memory context: user previously asked about {memory_context['last_department']}]"
+    # ── Rule-Based Routing ─────────────────────────────────────────────────
+    route = None
+    pipeline = ["query"]
 
-    classification_request = (
-        f"Classify this query and return a JSON intent:{context_note}\n\n"
-        f"Original query: \"{query}\"\n"
-        f"Enriched query (after entity resolution): \"{enrichment['enriched_query']}\"\n"
-        f"Detected departments: {enrichment['departments']}\n"
-        f"Detected metrics: {enrichment['metrics']}\n"
-        f"Detected time reference: {enrichment['time_reference']}\n"
-        f"Heuristic query type: {enrichment['query_type']}"
-    )
+    if any(word in query_lower for word in ["compare", "difference", "higher", "lower", "better", "worse"]):
+        route = "analytics"
+        pipeline = ["query", "analytics"]
+    elif any(word in query_lower for word in ["risk", "dropout", "arrears", "fail", "critical"]):
+        route = "performance"
+        pipeline = ["performance"]
+    elif any(word in query_lower for word in ["report", "summary", "pdf", "naac"]):
+        route = "report"
+        pipeline = ["report"]
+    
+    intent = {
+        "query_type": enrichment["query_type"],
+        "entities": {
+            "departments": enrichment["departments"],
+            "metrics": enrichment["metrics"],
+            "time": enrichment["time_reference"],
+            "students": [],
+            "subjects": [],
+        },
+        "needs_visualization": False,
+        "needs_report": route == "report",
+        "needs_analytics": route == "analytics",
+        "needs_performance": route == "performance",
+        "agent_pipeline": pipeline,
+        "complexity": "multi_step" if len(pipeline) > 1 else "simple",
+        "enriched_query": enriched_query,
+        "primary_agent": route if route else "query",
+    }
 
-    messages = [{"role": "user", "content": classification_request}]
+    # ── LLM Fallback Classification if NO rule matches ─────────────────────
+    if not route:
+        context_note = ""
+        if memory_context.get("last_department"):
+            context_note = f"\n[Memory context: user previously asked about {memory_context['last_department']}]"
 
-    try:
-        response = await llm.generate(
-            messages=messages,
-            system_prompt=SUPERVISOR_PROMPT_V2,
-            temperature=0.0,
+        classification_request = (
+            f"Classify this query and return a JSON intent:{context_note}\n\n"
+            f"Original query: \"{query}\"\n"
+            f"Enriched query: \"{enriched_query}\"\n"
         )
-        intent = _extract_intent_json(response)
-    except Exception:
-        # Fallback: use semantic layer's heuristic detection
-        query_type = enrichment["query_type"]
-        needs_viz = query_type == "visualization"
-        needs_report = query_type == "report"
-        needs_analytics = query_type in ("comparative", "trend", "ranking", "analytical")
-        needs_performance = query_type == "predictive"
-        
-        pipeline = ["query"]
-        if needs_performance:
-            pipeline = ["performance"]
-        elif needs_report:
-            pipeline = ["report"]
+        messages = [{"role": "user", "content": classification_request}]
+
+        try:
+            response = await llm.generate(
+                messages=messages,
+                system_prompt=SUPERVISOR_PROMPT_V2,
+                temperature=0.0,
+                model_name="llama-3.1-8b-instant"
+            )
+            llm_intent = _extract_intent_json(response)
             
-        intent = {
-            "query_type": query_type,
-            "entities": {
-                "departments": enrichment["departments"],
-                "metrics": enrichment["metrics"],
-                "time": enrichment["time_reference"],
-                "students": [],
-                "subjects": [],
-            },
-            "needs_visualization": needs_viz,
-            "needs_report": needs_report,
-            "needs_analytics": needs_analytics,
-            "needs_performance": needs_performance,
-            "agent_pipeline": pipeline,
-            "complexity": "multi_step" if len(pipeline) > 1 else "simple",
-            "enriched_query": enrichment["enriched_query"],
-            "primary_agent": pipeline[0] if pipeline else "query",
-        }
+            # Merge fallback results into intent
+            valid_agents = {"query", "analytics", "performance", "report"}
+            llm_pipeline = [a for a in llm_intent.get("agent_pipeline", ["query"]) if a in valid_agents]
+            if not llm_pipeline:
+                llm_pipeline = ["query"]
+                
+            intent["agent_pipeline"] = llm_pipeline
+            intent["primary_agent"] = llm_pipeline[0]
+            intent["query_type"] = llm_intent.get("query_type", intent["query_type"])
+            pipeline = llm_pipeline
+            
+        except Exception:
+            # If fallback LLM fails, default to query
+            intent["agent_pipeline"] = ["query"]
+            intent["primary_agent"] = "query"
+            pipeline = ["query"]
 
-    # Merge semantic layer findings into intent entities
-    if not intent["entities"].get("departments") and enrichment["departments"]:
-        intent["entities"]["departments"] = enrichment["departments"]
-    if not intent["entities"].get("metrics") and enrichment["metrics"]:
-        intent["entities"]["metrics"] = enrichment["metrics"]
-    if not intent["entities"].get("time") and enrichment["time_reference"]:
-        intent["entities"]["time"] = enrichment["time_reference"]
-    if not intent.get("enriched_query"):
-        intent["enriched_query"] = enrichment["enriched_query"] or query
-
-    # Validate pipeline contains only known agents
-    valid_agents = {"query", "analytics", "performance", "report"}
-    pipeline = [a for a in intent.get("agent_pipeline", ["query"]) if a in valid_agents]
-    if not pipeline:
-        pipeline = ["query"]
-
-    intent["agent_pipeline"] = pipeline
-    primary = intent.get("primary_agent", pipeline[0])
-    if primary not in valid_agents:
-        primary = pipeline[0]
+    timing_metrics["supervisor_time"] = round(time.time() - start_time, 2)
 
     return {
         "intent": intent,
         "memory_context": memory_context,
-        "agent_used": primary,
+        "agent_used": intent["primary_agent"],
         "agent_pipeline": pipeline,
         "iterations": iterations + 1,
         "insights": [],
         "recommendations": [],
         "query_plan": [],
+        "timing_metrics": timing_metrics,
     }
 
 

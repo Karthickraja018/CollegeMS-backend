@@ -192,6 +192,7 @@ async def analytics_agent_node(state: AgentState) -> dict:
             messages=messages,
             system_prompt=ANALYTICS_AGENT_PROMPT,
             temperature=0.2,
+            model_name="llama-3.3-70b-versatile"
         )
         llm_response = _strip_thinking(llm_response)
         analytics_result = _extract_json(llm_response)

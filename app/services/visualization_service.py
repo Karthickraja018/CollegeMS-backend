@@ -8,8 +8,12 @@ def select_chart_type(intent: dict, data: list[dict]) -> str:
     entities = intent.get("entities", {})
     departments = entities.get("departments", [])
 
-    if query_type == "trend":
-        return "area"
+    x_key = list(data[0].keys())[0] if data else ""
+    x_key_lower = x_key.lower()
+    is_time_series = any(word in x_key_lower for word in ["date", "month", "year", "day", "time"])
+
+    if query_type == "trend" or is_time_series:
+        return "line"
     if query_type == "comparative" or len(departments) > 1:
         return "bar"
     if query_type in ("ranking", "analytical") and len(data) <= 8:
@@ -28,7 +32,12 @@ def build_chart_spec(data: list[dict], query: str, intent: dict) -> dict:
 
     x_key = keys[0]
     y_keys: list[str] = []
+    
+    ignore_as_y = {"year", "month", "day", "id", "student_id", "subject_id", "department_id"}
+    
     for k in keys[1:]:
+        if k.lower() in ignore_as_y or k.lower().endswith("_id"):
+            continue
         try:
             float(data[0][k] if data[0][k] is not None else 0)
             y_keys.append(k)
@@ -87,6 +96,16 @@ def build_chart_spec(data: list[dict], query: str, intent: dict) -> dict:
             )
         except (TypeError, ValueError):
             insight = f"Showing {len(data)} data points."
+
+    month_names = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun", 7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
+    if x_key.lower() == "month":
+        for row in data:
+            try:
+                m = int(float(row[x_key]))
+                if 1 <= m <= 12:
+                    row[x_key] = month_names[m]
+            except (TypeError, ValueError):
+                pass
 
     spec = {
         "chartType": chart_type,

@@ -49,7 +49,7 @@ async def _gather_student_metrics(
 
     sem_filter = ""
     if semester:
-        sem_filter = f"AND s.semester = {int(semester)}"
+        sem_filter = f"AND s.current_semester = {int(semester)}"
 
     sql = text(f"""
         WITH attendance_stats AS (
@@ -57,7 +57,7 @@ async def _gather_student_metrics(
                 s.id                  AS student_id,
                 s.name,
                 s.roll_number,
-                s.semester,
+                s.current_semester    AS semester,
                 s.batch,
                 s.section,
                 d.name                AS department,
@@ -70,9 +70,9 @@ async def _gather_student_metrics(
                 ) AS attendance_pct
             FROM students s
             LEFT JOIN departments d ON d.id = s.department_id
-            LEFT JOIN attendance a ON a.student_id = s.id
+            LEFT JOIN attendance_records a ON a.student_id = s.id
             WHERE 1=1 {dept_filter} {sem_filter}
-            GROUP BY s.id, s.name, s.roll_number, s.semester, s.batch, s.section, d.name, d.code
+            GROUP BY s.id, s.name, s.roll_number, s.current_semester, s.batch, s.section, d.name, d.code
         ),
         marks_stats AS (
             SELECT
@@ -82,7 +82,7 @@ async def _gather_student_metrics(
                 COUNT(CASE WHEN m.marks_obtained * 100.0 / NULLIF(m.max_marks, 0) < 40 THEN 1 END)
                     AS subjects_below_pass,
                 COUNT(DISTINCT m.subject_id) AS total_subjects
-            FROM marks m
+            FROM marks_records m
             GROUP BY m.student_id
         )
         SELECT
@@ -340,9 +340,13 @@ async def performance_agent_node(state: AgentState, db: AsyncSession) -> dict:
 
     # ── LLM Analysis ─────────────────────────────────────────────────────────
     import json
+    from app.agents.nlp_sql_mcp.tools.db_tools import tool_search_schema
+    schema_context = tool_search_schema("students departments attendance_records marks_records")
+    
     messages = [{
         "role": "user",
         "content": (
+            f"Database Schema Context (via MCP Tools):\n{schema_context}\n\n"
             f"Performance analysis data{scope_label}:\n"
             f"{json.dumps(summary_data, indent=2, default=str)}\n\n"
             "Generate a comprehensive risk analysis report with insights and recommendations."

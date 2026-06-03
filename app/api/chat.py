@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.database import get_db
 from app.api.deps import get_current_user, get_ai_context
@@ -52,12 +53,15 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 class ChatMessage(BaseModel):
     query: str
     conversation_history: list[dict] = []
+    session_key: str | None = None
 
 
 async def _event_stream(
     query: str,
     history: list[dict],
     user_context: dict = None,
+    session_key: str = None,
+    user_id: int = None,
 ) -> AsyncIterator[str]:
     """
     Run the V2 LangGraph supervisor and stream SSE events.
@@ -133,6 +137,86 @@ async def _event_stream(
                     # If this is any other top-level agent node or the whole graph
                     elif name in ["query", "analytics", "performance", "report", "LangGraph"]:
                         current_state.update(output)
+
+            # --- Persist to DB before closing ---
+            if session_key and user_id:
+                import time
+                ts = int(time.time() * 1000)
+                
+                user_msg = {
+                    "id": str(ts),
+                    "role": "user", 
+                    "content": query
+                }
+                
+                assistant_msg = None
+                if current_state.get("final_response"):
+                    assistant_msg = {
+                        "id": str(ts + 1),
+                        "role": "assistant",
+                        "content": current_state.get("final_response"),
+                        "agent": current_state.get("agent_used", "query"),
+                        "isStreaming": False
+                    }
+                    
+                    if current_state.get("insights"):
+                        assistant_msg["insights"] = current_state.get("insights")
+                    if current_state.get("recommendations"):
+                        assistant_msg["actions"] = current_state.get("recommendations")
+                    if current_state.get("chart_spec"):
+                        assistant_msg["chartSpec"] = current_state.get("chart_spec")
+                        
+                    sql_res = current_state.get("sql_result")
+                    if sql_res and isinstance(sql_res, list) and len(sql_res) > 0:
+                        assistant_msg["tableData"] = {
+                            "columns": list(sql_res[0].keys()),
+                            "rows": sql_res[:100],
+                            "row_count": len(sql_res)
+                        }
+                    if current_state.get("report_url"):
+                        assistant_msg["reportUrl"] = current_state.get("report_url")
+                    if current_state.get("risk_analysis"):
+                        assistant_msg["risk_analysis"] = current_state.get("risk_analysis")
+                    if current_state.get("analytics_result"):
+                        assistant_msg["analytics"] = current_state.get("analytics_result")
+                
+                r = await db.execute(text("SELECT id, messages FROM chat_sessions WHERE session_key = :sk"), {"sk": session_key})
+                session_row = r.fetchone()
+                
+                if session_row:
+                    existing_msgs = session_row.messages or []
+                    existing_msgs.append(user_msg)
+                    if assistant_msg:
+                        existing_msgs.append(assistant_msg)
+                        
+                    msgs_json = safe_json_dumps(existing_msgs)
+                    await db.execute(text("""
+                        UPDATE chat_sessions 
+                        SET messages = CAST(:msgs AS jsonb), last_agent = :agent, updated_at = NOW()
+                        WHERE session_key = :sk
+                    """), {
+                        "msgs": msgs_json,
+                        "agent": current_state.get("agent_used", "query"),
+                        "sk": session_key
+                    })
+                else:
+                    new_msgs = [user_msg]
+                    if assistant_msg:
+                        new_msgs.append(assistant_msg)
+                        
+                    msgs_json = safe_json_dumps(new_msgs)
+                    title = query[:50] + "..." if len(query) > 50 else query
+                    await db.execute(text("""
+                        INSERT INTO chat_sessions (user_id, session_key, title, messages, last_agent)
+                        VALUES (:uid, :sk, :title, CAST(:msgs AS jsonb), :agent)
+                    """), {
+                        "uid": user_id,
+                        "sk": session_key,
+                        "title": title,
+                        "msgs": msgs_json,
+                        "agent": current_state.get("agent_used", "query")
+                    })
+                await db.commit()
 
         # The DB session is now closed! The connection is returned to the pool.
         result = current_state
@@ -214,7 +298,13 @@ async def chat_stream(
 ):
     """SSE streaming chat endpoint — V2 multi-agent supervisor with role-scoped context."""
     return StreamingResponse(
-        _event_stream(body.query, body.conversation_history, ai_context),
+        _event_stream(
+            query=body.query, 
+            history=body.conversation_history, 
+            user_context=ai_context,
+            session_key=body.session_key,
+            user_id=current_user.id
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -222,6 +312,52 @@ async def chat_stream(
             "Connection": "keep-alive",
         },
     )
+
+
+@router.get("/history")
+async def get_chat_history(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the user's past chat sessions"""
+    r = await db.execute(text("""
+        SELECT session_key, title, last_agent, updated_at 
+        FROM chat_sessions 
+        WHERE user_id = :uid 
+        ORDER BY updated_at DESC
+        LIMIT 50
+    """), {"uid": current_user.id})
+    
+    history = []
+    for row in r.fetchall():
+        history.append({
+            "id": row.session_key,
+            "title": row.title,
+            "session_key": row.session_key,
+            "last_agent": row.last_agent,
+            "updated_at": row.updated_at
+        })
+    return {"history": history}
+
+
+@router.get("/history/{session_key}")
+async def get_chat_session(
+    session_key: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get messages for a specific session"""
+    r = await db.execute(text("""
+        SELECT messages 
+        FROM chat_sessions 
+        WHERE session_key = :sk AND user_id = :uid
+    """), {"sk": session_key, "uid": current_user.id})
+    row = r.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    return {"messages": row.messages}
+
 
 
 @router.post("/analyze-performance")

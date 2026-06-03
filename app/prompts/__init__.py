@@ -328,10 +328,14 @@ INTERVENTION RECOMMENDATIONS TEMPLATE:
 - MEDIUM: Peer tutoring + progress monitoring
 - LOW: Recognition and encouragement to maintain performance
 
-FORMAT:
-Return a structured report in clear sections with headers.
-Use exact numbers from the data — never round or approximate.
-Be empathetic — these are real students, not data points.
+FORMAT INSTRUCTIONS (STRICT MARKDOWN):
+You must format your response beautifully using Markdown:
+1. Use `###` for main headers.
+2. For "Summary Statistics" and "Department-Wise Risk", use bullet points (`-`) with bolding for the numbers.
+3. For "Top 10 Highest-Risk Students", you MUST output a Markdown table with columns: `| Student Name | Dept & Sem | Risk Score | Category | Primary Issues |`.
+4. For "Intervention Recommendations", use bold bullet points.
+5. Use exact numbers from the data — never round or approximate.
+6. Be empathetic — these are real students, not data points.
 """
 
 

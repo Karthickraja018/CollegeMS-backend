@@ -222,7 +222,14 @@ class CollegeSemanticLayer:
         """Detect and classify time references in the query."""
         q_lower = query.lower()
         for pattern, label in TIME_PATTERNS:
-            if re.search(pattern, q_lower):
+            match = re.search(pattern, q_lower)
+            if match:
+                if label == "last_n_months":
+                    n = match.group(1)
+                    return f"last_{n}_months"
+                if label == "last_n_days":
+                    n = match.group(1)
+                    return f"last_{n}_days"
                 return label
         return None
 

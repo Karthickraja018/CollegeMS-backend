@@ -3,7 +3,7 @@ Admin — AI Operations API
 Tables: chat_sessions, at_risk_snapshots, reports
 """
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from app.database import get_db
 from app.api.deps import get_current_college_admin
@@ -13,14 +13,14 @@ router = APIRouter(prefix="/admin/ai", tags=["Admin – AI Operations"])
 
 
 @router.get("/stats")
-def ai_stats(
-    db: Session = Depends(get_db),
+async def ai_stats(
+    db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_college_admin),
 ):
     """Aggregated AI usage metrics."""
     college_id = current_user.college_id
 
-    chat_stats = db.execute(text("""
+    chat_stats_res = await db.execute(text("""
         SELECT
             COUNT(*)                                   AS total_sessions,
             COUNT(DISTINCT cs.user_id)                 AS unique_users,
@@ -32,9 +32,10 @@ def ai_stats(
         FROM chat_sessions cs
         JOIN users u ON u.id = cs.user_id
         WHERE u.college_id = :college_id
-    """), {"college_id": college_id}).fetchone()
+    """), {"college_id": college_id})
+    chat_stats = chat_stats_res.fetchone()
 
-    by_agent = db.execute(text("""
+    by_agent_res = await db.execute(text("""
         SELECT
             COALESCE(cs.last_agent, 'unknown') AS agent,
             COUNT(*) AS sessions
@@ -42,9 +43,10 @@ def ai_stats(
         JOIN users u ON u.id = cs.user_id
         WHERE u.college_id = :college_id
         GROUP BY cs.last_agent ORDER BY sessions DESC
-    """), {"college_id": college_id}).fetchall()
+    """), {"college_id": college_id})
+    by_agent = by_agent_res.fetchall()
 
-    risk_stats = db.execute(text("""
+    risk_stats_res = await db.execute(text("""
         SELECT
             COUNT(DISTINCT student_id)                          AS students_scanned,
             COUNT(DISTINCT student_id)
@@ -59,18 +61,20 @@ def ai_stats(
         JOIN departments d ON d.id = st.department_id
         WHERE d.college_id = :college_id
           AND snapshot_date = (SELECT MAX(snapshot_date) FROM at_risk_snapshots)
-    """), {"college_id": college_id}).fetchone()
+    """), {"college_id": college_id})
+    risk_stats = risk_stats_res.fetchone()
 
-    report_stats = db.execute(text("""
+    report_stats_res = await db.execute(text("""
         SELECT
             COUNT(*) AS total_reports,
             COUNT(*) FILTER (WHERE status = 'completed')    AS completed,
             COUNT(*) FILTER (WHERE status = 'failed')       AS failed,
             COUNT(*) FILTER (WHERE status IN ('queued','generating')) AS in_progress
         FROM reports WHERE college_id = :college_id
-    """), {"college_id": college_id}).fetchone()
+    """), {"college_id": college_id})
+    report_stats = report_stats_res.fetchone()
 
-    daily_usage = db.execute(text("""
+    daily_usage_res = await db.execute(text("""
         SELECT
             TO_CHAR(cs.created_at, 'YYYY-MM-DD') AS day,
             COUNT(*)                              AS sessions
@@ -79,28 +83,29 @@ def ai_stats(
         WHERE u.college_id = :college_id
           AND cs.created_at >= NOW() - INTERVAL '30 days'
         GROUP BY day ORDER BY day
-    """), {"college_id": college_id}).fetchall()
+    """), {"college_id": college_id})
+    daily_usage = daily_usage_res.fetchall()
 
     return {
-        "chat": dict(chat_stats._mapping),
+        "chat": dict(chat_stats._mapping) if chat_stats else {},
         "by_agent": [dict(r._mapping) for r in by_agent],
-        "risk_monitoring": dict(risk_stats._mapping) if risk_stats else {},
-        "reports": dict(report_stats._mapping),
+        "risk_monitoring": dict(risk_stats._mapping) if risk_stats and risk_stats[0] is not None else {},
+        "reports": dict(report_stats._mapping) if report_stats else {},
         "daily_usage": [dict(r._mapping) for r in daily_usage],
     }
 
 
 @router.get("/sessions")
-def recent_sessions(
+async def recent_sessions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, le=100),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_college_admin),
 ):
     college_id = current_user.college_id
     offset = (page - 1) * page_size
 
-    rows = db.execute(text("""
+    rows_res = await db.execute(text("""
         SELECT
             cs.id, cs.title, cs.last_agent, cs.created_at, cs.updated_at,
             JSONB_ARRAY_LENGTH(cs.messages) AS message_count,
@@ -110,14 +115,15 @@ def recent_sessions(
         WHERE u.college_id = :college_id
         ORDER BY cs.updated_at DESC
         LIMIT :limit OFFSET :offset
-    """), {"college_id": college_id, "limit": page_size, "offset": offset}).fetchall()
+    """), {"college_id": college_id, "limit": page_size, "offset": offset})
+    rows = rows_res.fetchall()
 
     return [dict(r._mapping) for r in rows]
 
 
 @router.post("/risk/trigger-scan")
-def trigger_risk_scan(
-    db: Session = Depends(get_db),
+async def trigger_risk_scan(
+    db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_college_admin),
 ):
     """
@@ -127,7 +133,7 @@ def trigger_risk_scan(
     college_id = current_user.college_id
 
     # Mark students with low attendance as at-risk (simplified inline scoring)
-    updated = db.execute(text("""
+    updated = await db.execute(text("""
         UPDATE students st
         SET risk_score = LEAST(100, COALESCE((
             SELECT ROUND(
@@ -145,8 +151,6 @@ def trigger_risk_scan(
         WHERE st.college_id = :college_id AND st.status = 'active'
         RETURNING id
     """), {"college_id": college_id})
-    db.commit()
+    await db.commit()
 
     return {"success": True, "message": "Risk scan triggered", "students_updated": updated.rowcount}
-
-

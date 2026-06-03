@@ -140,6 +140,32 @@ async def list_departments(
     rows = r.fetchall()
     return [dict(zip(r.keys(), row)) for row in rows]
 
+@router.get("/departments/overview")
+async def get_departments_overview(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    r = await db.execute(
+        text("""
+            SELECT
+                d.id, d.name, d.code, d.is_active,
+                u.full_name AS hod_name,
+                COUNT(DISTINCT s.id) AS faculty_count,
+                CASE 
+                    WHEN COUNT(DISTINCT s.id) >= 4 THEN 'Healthy'
+                    WHEN COUNT(DISTINCT s.id) >= 2 THEN 'Stable'
+                    ELSE 'Needs Attention'
+                END as health_status
+            FROM departments d
+            LEFT JOIN users u ON u.id = d.hod_id
+            LEFT JOIN users s ON s.department_id = d.id AND s.role IN ('faculty', 'hod', 'principal') AND s.is_active = TRUE
+            GROUP BY d.id, u.full_name
+            ORDER BY d.name
+        """)
+    )
+    rows = r.fetchall()
+    return [dict(zip(r.keys(), row)) for row in rows]
+
 
 @router.post("/departments", status_code=status.HTTP_201_CREATED)
 async def create_department(

@@ -47,6 +47,11 @@ class UserUpdate(BaseModel):
 class PasswordReset(BaseModel):
     new_password: str
 
+class BulkUserAction(BaseModel):
+    user_ids: list[int]
+    action: str  # "activate", "deactivate", "assign_department", "change_role", "delete"
+    value: Optional[str] = None
+
 
 @router.get("")
 async def list_users(
@@ -261,3 +266,62 @@ async def get_user_activity(
     )
     rows = r.fetchall()
     return [dict(zip(r.keys(), row)) for row in rows]
+
+@router.get("/insights/ai")
+async def get_user_insights(db: AsyncSession = Depends(get_db), current_user: User = Depends(_admin)):
+    insights = []
+    
+    # 1. Inactive users (not logged in for 30 days)
+    r = await db.execute(text("SELECT COUNT(*) FROM users WHERE last_login < NOW() - INTERVAL '30 days' AND role IN ('faculty', 'hod')"))
+    inactive = r.scalar() or 0
+    if inactive > 0:
+        insights.append(f"{inactive} faculty members have not logged in for 30 days")
+        
+    # 2. Dept with highest active users
+    r = await db.execute(text("""
+        SELECT d.name FROM departments d 
+        JOIN users u ON u.department_id = d.id 
+        WHERE u.is_active = TRUE 
+        GROUP BY d.name ORDER BY COUNT(*) DESC LIMIT 1
+    """))
+    dept = r.scalar()
+    if dept:
+        insights.append(f"{dept} department has the highest active users")
+        
+    # 3. New users added this month
+    r = await db.execute(text("SELECT COUNT(*) FROM users WHERE created_at >= date_trunc('month', current_date)"))
+    new_users = r.scalar() or 0
+    if new_users > 0:
+        insights.append(f"{new_users} new users added this month")
+        
+    return {"insights": insights}
+
+@router.post("/bulk")
+async def bulk_action(
+    body: BulkUserAction,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_admin)
+):
+    if not body.user_ids:
+        raise HTTPException(status_code=400, detail="No users selected")
+        
+    if body.action == "activate":
+        await db.execute(text("UPDATE users SET is_active = TRUE, updated_at = NOW() WHERE id = ANY(:ids)"), {"ids": body.user_ids})
+    elif body.action == "deactivate":
+        # prevent deactivating self
+        ids = [uid for uid in body.user_ids if uid != current_user.id]
+        if ids:
+            await db.execute(text("UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = ANY(:ids)"), {"ids": ids})
+    elif body.action == "assign_department":
+        await db.execute(text("UPDATE users SET department_id = :dept_id, updated_at = NOW() WHERE id = ANY(:ids)"), {"dept_id": int(body.value), "ids": body.user_ids})
+    elif body.action == "change_role":
+        await db.execute(text("UPDATE users SET role = :role, updated_at = NOW() WHERE id = ANY(:ids)"), {"role": body.value, "ids": body.user_ids})
+    elif body.action == "delete":
+        ids = [uid for uid in body.user_ids if uid != current_user.id]
+        if ids:
+            await db.execute(text("DELETE FROM users WHERE id = ANY(:ids)"), {"ids": ids})
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
+        
+    await db.commit()
+    return {"message": f"Bulk action '{body.action}' completed successfully"}

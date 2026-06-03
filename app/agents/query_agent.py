@@ -110,6 +110,10 @@ async def _generate_sql(
     entities = intent.get("entities", {})
     query_type = intent.get("query_type", "descriptive")
 
+    trend_instruction = ""
+    if query_type == "trend":
+        trend_instruction = "\nCRITICAL: This is a trend query. You MUST aggregate the data over time (e.g. GROUP BY month/year) rather than returning raw individual rows. Return the aggregated metric (e.g. AVG(attendance)) alongside the time dimension."
+
     sql_request = (
         f"You are a PostgreSQL expert.\n"
         f"User Role: {role}\n"
@@ -120,6 +124,7 @@ async def _generate_sql(
         f"Departments: {entities.get('departments', [])}\n"
         f"Metrics needed: {entities.get('metrics', [])}\n"
         f"Time filter: {entities.get('time', 'none')}\n"
+        f"{trend_instruction}\n"
         f"{correction_note}\n"
         "Generate a single read-only PostgreSQL SELECT query.\n"
         "Return SQL only."

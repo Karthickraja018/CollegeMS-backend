@@ -76,6 +76,10 @@ app.include_router(dept_intel_router, prefix="/api")
 from app.api.data_sync import router as data_sync_router
 app.include_router(data_sync_router, prefix="/api")
 
+# ── Principal Platform (NEW) ──────────────────────────────────────────────────
+from app.api.principal.router import router as principal_router
+app.include_router(principal_router, prefix="/api")
+
 # ── Admin Module Routes — Phase 1 ─────────────────────────────────────────────
 from app.api.admin.dashboard import router as admin_dashboard_router
 from app.api.admin.academic import router as admin_academic_router

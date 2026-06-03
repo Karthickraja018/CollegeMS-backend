@@ -393,7 +393,7 @@ async def get_dashboard_kpis(
     if scope.is_assignment_scoped:
         # Faculty gets their assigned subject count
         r = await db.execute(
-            text("SELECT COUNT(*) FROM faculty_subject_assignments WHERE faculty_id = :uid"),
+            text("SELECT COUNT(*) FROM faculty_subject_assignments WHERE user_id = :uid"),
             {"uid": current_user.id},
         )
         kpis["assigned_subjects"] = r.scalar() or 0

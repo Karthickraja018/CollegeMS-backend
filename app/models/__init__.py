@@ -13,6 +13,8 @@ from .fee_account import FeeAccount
 from .fee_transaction import FeeTransaction
 from .placement_drive import PlacementDrive
 from .placement_application import PlacementApplication
+from .principal import InstitutionMetric, DepartmentMetric, StudentRiskScore, AccreditationMetric, ExecutiveInsight
+from .performance import StaffPerformanceMetric, HodPerformanceMetric
 
 __all__ = [
     "College",
@@ -29,5 +31,12 @@ __all__ = [
     "FeeAccount",
     "FeeTransaction",
     "PlacementDrive",
-    "PlacementApplication"
+    "PlacementApplication",
+    "InstitutionMetric",
+    "DepartmentMetric",
+    "StudentRiskScore",
+    "AccreditationMetric",
+    "ExecutiveInsight",
+    "StaffPerformanceMetric",
+    "HodPerformanceMetric",
 ]

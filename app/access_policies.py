@@ -88,7 +88,7 @@ async def assert_student_access(
                 SELECT 1
                 FROM marks m
                 JOIN faculty_subject_assignments fsa ON fsa.subject_id = m.subject_id
-                WHERE fsa.faculty_id = :uid AND m.student_id = :sid
+                WHERE fsa.user_id = :uid AND m.student_id = :sid
                 LIMIT 1
             """),
             {"uid": user.id, "sid": student_id},
@@ -158,7 +158,7 @@ async def get_student_id_filter_sql(user: User, db: AsyncSession) -> tuple[str, 
             SELECT DISTINCT m.student_id
             FROM marks m
             JOIN faculty_subject_assignments fsa ON fsa.subject_id = m.subject_id
-            WHERE fsa.faculty_id = :uid
+            WHERE fsa.user_id = :uid
         """),
         {"uid": user.id},
     )

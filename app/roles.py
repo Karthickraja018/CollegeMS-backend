@@ -128,7 +128,7 @@ def get_ai_context_for_role(user: User) -> dict:
         "student_filter_sql": (
             "AND s.department_id = (SELECT department_id FROM users WHERE id = :user_id)"
             if scope.student_filter == "department"
-            else "AND s.id IN (SELECT DISTINCT s2.id FROM students s2 JOIN faculty_subject_assignments fsa ON fsa.subject_id IN (SELECT subject_id FROM faculty_subject_assignments WHERE faculty_id = :user_id) JOIN marks m ON m.student_id = s2.id)"
+            else "AND s.id IN (SELECT DISTINCT s2.id FROM students s2 JOIN faculty_subject_assignments fsa ON fsa.subject_id IN (SELECT subject_id FROM faculty_subject_assignments WHERE user_id = :user_id) JOIN marks m ON m.student_id = s2.id)"
             if scope.student_filter == "assigned"
             else ""
         ),

@@ -31,12 +31,20 @@ router = APIRouter(prefix="/department-intelligence", tags=["department-intellig
 
 async def _get_dept_ahs(db: AsyncSession, dept_id: int) -> dict:
     """Compute Academic Health Score for a department."""
+    # Fetch dynamic thresholds
+    s_res = await db.execute(text(
+        "SELECT c.settings FROM colleges c JOIN departments d ON d.college_id = c.id WHERE d.id = :dept_id"
+    ), {"dept_id": dept_id})
+    settings = s_res.scalar() or {}
+    pass_threshold = float(settings.get("pass_mark_threshold", 50))
+    risk_threshold = float(settings.get("risk_score_threshold", 60))
+
     r = await db.execute(
         text("""
             SELECT
                 ROUND(AVG(att.attendance_pct)::numeric, 1) AS avg_att,
-                ROUND((COUNT(*) FILTER (WHERE mr.percentage >= 50) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1) AS pass_rate,
-                COUNT(*) FILTER (WHERE s.risk_score >= 60) AS at_risk,
+                ROUND((COUNT(*) FILTER (WHERE mr.percentage >= :pass_threshold) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1) AS pass_rate,
+                COUNT(*) FILTER (WHERE s.risk_score >= :risk_threshold) AS at_risk,
                 COUNT(*) AS total_students,
                 ROUND(AVG(mr.percentage)::numeric, 1) AS avg_marks
             FROM students s
@@ -48,7 +56,7 @@ async def _get_dept_ahs(db: AsyncSession, dept_id: int) -> dict:
             LEFT JOIN marks_records mr ON mr.student_id = s.id AND mr.is_absent = FALSE
             WHERE s.department_id = :dept_id AND s.status = 'active'
         """),
-        {"dept_id": dept_id},
+        {"dept_id": dept_id, "pass_threshold": pass_threshold, "risk_threshold": risk_threshold},
     )
     row = r.fetchone()
     if not row:
@@ -242,7 +250,7 @@ async def get_faculty_performance(
                 ROUND(AVG(att.attendance_pct)::numeric, 1) AS avg_student_att,
                 ROUND((COUNT(*) FILTER (WHERE mr.percentage >= 50) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1) AS pass_rate
             FROM users u
-            JOIN faculty_subject_assignments fsa ON fsa.faculty_id = u.id
+            JOIN faculty_subject_assignments fsa ON fsa.user_id = u.id
             LEFT JOIN marks_records mr ON mr.subject_id = fsa.subject_id AND mr.is_absent = FALSE
             LEFT JOIN students s ON s.id = mr.student_id AND s.status = 'active'
             LEFT JOIN (

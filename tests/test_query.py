@@ -9,8 +9,8 @@ async def run():
     async with AsyncSessionLocal() as db:
         graph = build_supervisor_graph(db)
         state = {
-            "messages": [("user", "What is the average attendance in CSE department?")],
-            "user_query": "What is the average attendance in CSE department?",
+            "messages": [("user", "Compare attendance between CSE and ECE")],
+            "user_query": "Compare attendance between CSE and ECE",
             "memory_context": {},
             "intent": {},
             "query_plan": [],

@@ -145,9 +145,9 @@ async def _classify_intent(state: AgentState) -> dict:
     route = None
     pipeline = ["query"]
 
-    if any(word in query_lower for word in ["compare", "difference", "higher", "lower", "better", "worse"]):
+    if any(word in query_lower for word in ["compare", "difference", "higher", "lower", "better", "worse", "trend", "chart", "graph", "visualize", "pattern", "patterns"]):
         route = "analytics"
-        pipeline = ["query", "analytics"]
+        pipeline = ["query", "analytics", "visualization"]
     elif any(word in query_lower for word in ["risk", "dropout", "arrears", "fail", "critical"]):
         route = "performance"
         pipeline = ["performance"]
@@ -164,7 +164,7 @@ async def _classify_intent(state: AgentState) -> dict:
             "students": [],
             "subjects": [],
         },
-        "needs_visualization": False,
+        "needs_visualization": "visualization" in pipeline,
         "needs_report": route == "report",
         "needs_analytics": route == "analytics",
         "needs_performance": route == "performance",
@@ -197,7 +197,7 @@ async def _classify_intent(state: AgentState) -> dict:
             llm_intent = _extract_intent_json(response)
             
             # Merge fallback results into intent
-            valid_agents = {"query", "analytics", "performance", "report"}
+            valid_agents = {"query", "analytics", "visualization", "performance", "report"}
             llm_pipeline = [a for a in llm_intent.get("agent_pipeline", ["query"]) if a in valid_agents]
             if not llm_pipeline:
                 llm_pipeline = ["query"]
@@ -236,30 +236,23 @@ def _route_from_classify(state: AgentState) -> str:
     return pipeline[0] if pipeline else "query"
 
 
-def _route_after_query(state: AgentState) -> str:
+def _route_after_query(state: AgentState) -> list[str]:
     """
-    After query agent: decide if analytics should follow.
+    After query agent: branch into parallel analytics and/or visualization if needed.
     """
     pipeline = state.get("agent_pipeline", ["query"])
-    intent = state.get("intent", {})
     sql_result = state.get("sql_result", [])
 
-    # If no data retrieved, skip downstream agents
     if not sql_result:
-        return END
+        return [END]
 
-    # Check what's next after "query" in pipeline
-    try:
-        query_idx = pipeline.index("query")
-        next_agent = pipeline[query_idx + 1] if query_idx + 1 < len(pipeline) else None
-    except ValueError:
-        next_agent = None
+    next_nodes = []
+    if "analytics" in pipeline:
+        next_nodes.append("analytics")
+    if "visualization" in pipeline:
+        next_nodes.append("visualization")
 
-    if next_agent in ("analytics",):
-        return next_agent
-
-    return END
-
+    return next_nodes if next_nodes else [END]
 
 def _route_after_analytics(state: AgentState) -> str:
     """After analytics: END."""
@@ -276,6 +269,7 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
     from app.agents.analytics_agent import analytics_agent_node
     from app.agents.performance_agent import performance_agent_node
     from app.agents.report_agent import report_agent_node
+    from app.agents.visualization_agent import visualization_agent_node
 
     # Bind DB session to agents that need it
     query_node = partial(query_agent_node, db=db)
@@ -288,6 +282,7 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
     graph.add_node("classify", _classify_intent)
     graph.add_node("query", query_node)
     graph.add_node("analytics", analytics_agent_node)
+    graph.add_node("visualization", visualization_agent_node)
     graph.add_node("performance", performance_node)
     graph.add_node("report", report_node)
 
@@ -301,31 +296,26 @@ def build_supervisor_graph(db: AsyncSession) -> StateGraph:
         {
             "query": "query",
             "analytics": "analytics",
+            "visualization": "visualization",
             "performance": "performance",
             "report": "report",
         },
     )
 
-    # query → analytics | END
+    # query → [analytics, visualization] | END
     graph.add_conditional_edges(
         "query",
         _route_after_query,
         {
             "analytics": "analytics",
-            END: END,
-        },
-    )
-
-    # analytics → END
-    graph.add_conditional_edges(
-        "analytics",
-        _route_after_analytics,
-        {
+            "visualization": "visualization",
             END: END,
         },
     )
 
     # Terminal nodes
+    graph.add_edge("analytics", END)
+    graph.add_edge("visualization", END)
     graph.add_edge("performance", END)
     graph.add_edge("report", END)
 

@@ -26,6 +26,16 @@ PASS_MARKS_THRESHOLD = 40.0    # Below this → at risk
 MARKS_CRITICAL = 25.0          # Below this → critical risk contributor
 MAX_ARREARS_FOR_FULL_RISK = 5  # 5+ arrears = max arrear component
 
+async def _load_thresholds(db: AsyncSession) -> dict:
+    """Load dynamic thresholds from colleges.settings."""
+    r = await db.execute(text("SELECT settings FROM colleges LIMIT 1"))
+    settings = r.scalar() or {}
+    return {
+        "attendance_threshold": float(settings.get("attendance_threshold", ATTENDANCE_THRESHOLD)),
+        "pass_marks_threshold": float(settings.get("pass_mark_threshold", PASS_MARKS_THRESHOLD)),
+        "risk_score_threshold": float(settings.get("risk_score_threshold", 60.0)),
+    }
+
 
 def _strip_thinking(text: str) -> str:
     """Remove <thinking>/<thought> blocks from model output."""
@@ -43,13 +53,16 @@ async def _gather_student_metrics(
     Gather comprehensive student metrics.
     Optionally scoped to a specific department or semester.
     """
-    dept_filter = ""
+    params = {}
+    dept_clause = ""
     if department_name:
-        dept_filter = f"AND LOWER(d.name) = LOWER('{department_name.replace(chr(39), chr(39)+chr(39))}')"
+        dept_clause = "AND LOWER(d.code) = LOWER(:dept_code)"
+        params["dept_code"] = department_name
 
-    sem_filter = ""
+    sem_clause = ""
     if semester:
-        sem_filter = f"AND s.current_semester = {int(semester)}"
+        sem_clause = "AND s.current_semester = :semester"
+        params["semester"] = int(semester)
 
     sql = text(f"""
         WITH attendance_stats AS (
@@ -71,7 +84,7 @@ async def _gather_student_metrics(
             FROM students s
             LEFT JOIN departments d ON d.id = s.department_id
             LEFT JOIN attendance_records a ON a.student_id = s.id
-            WHERE 1=1 {dept_filter} {sem_filter}
+            WHERE 1=1 {dept_clause} {sem_clause}
             GROUP BY s.id, s.name, s.roll_number, s.current_semester, s.batch, s.section, d.name, d.code
         ),
         marks_stats AS (
@@ -103,12 +116,12 @@ async def _gather_student_metrics(
         LEFT JOIN marks_stats ms ON ms.student_id = a.student_id
         ORDER BY a.department, a.semester, a.name
     """)
-    result = await db.execute(sql)
+    result = await db.execute(sql, params)
     rows = result.fetchall()
     return [dict(zip(result.keys(), row)) for row in rows]
 
 
-def _compute_risk_score(student: dict) -> float:
+def _compute_risk_score(student: dict, thresholds: dict) -> float:
     """
     Compute risk score 0-100.
     Higher score = higher risk.
@@ -126,16 +139,19 @@ def _compute_risk_score(student: dict) -> float:
     marks_pct = float(student.get("avg_marks_pct") or 0)
     arrears = int(student.get("subjects_below_pass") or 0)
 
+    att_thresh = thresholds.get("attendance_threshold", ATTENDANCE_THRESHOLD)
+    pass_thresh = thresholds.get("pass_marks_threshold", PASS_MARKS_THRESHOLD)
+
     # Attendance component: quadratic for faster rise as attendance drops
-    if att_pct < ATTENDANCE_THRESHOLD:
-        raw_att = (ATTENDANCE_THRESHOLD - att_pct) / ATTENDANCE_THRESHOLD
+    if att_pct < att_thresh:
+        raw_att = (att_thresh - att_pct) / att_thresh
         att_risk = raw_att ** 0.7  # sub-linear → rises faster than linear
     else:
         att_risk = 0.0
 
     # Marks component: quadratic for faster rise as marks drop
-    if marks_pct < PASS_MARKS_THRESHOLD:
-        raw_marks = (PASS_MARKS_THRESHOLD - marks_pct) / PASS_MARKS_THRESHOLD
+    if marks_pct < pass_thresh:
+        raw_marks = (pass_thresh - marks_pct) / pass_thresh
         marks_risk = raw_marks ** 0.7
     else:
         marks_risk = 0.0
@@ -151,7 +167,7 @@ def _compute_risk_score(student: dict) -> float:
 
     # Multi-factor penalty: student has BOTH attendance AND marks below threshold
     multi_factor_penalty = 0.0
-    if att_pct < ATTENDANCE_THRESHOLD and marks_pct < PASS_MARKS_THRESHOLD:
+    if att_pct < att_thresh and marks_pct < pass_thresh:
         multi_factor_penalty = 10.0
     # Extra penalty for critical levels
     if att_pct < ATTENDANCE_CRITICAL or marks_pct < MARKS_CRITICAL:
@@ -172,7 +188,7 @@ def _risk_category(score: float) -> str:
     return "LOW"
 
 
-def _build_risk_explanation(student: dict) -> str:
+def _build_risk_explanation(student: dict, thresholds: dict) -> str:
     """
     Generate a human-readable explanation of why a student has their risk score.
     e.g.: "Attendance 58% (below 75%), Average marks 32% (below 40%), 3 active arrears"
@@ -183,11 +199,14 @@ def _build_risk_explanation(student: dict) -> str:
     marks_pct = float(student.get("avg_marks_pct") or 0)
     arrears = int(student.get("subjects_below_pass") or 0)
 
-    if att_pct < ATTENDANCE_THRESHOLD:
-        reasons.append(f"Attendance {att_pct:.1f}% (below {ATTENDANCE_THRESHOLD:.0f}% threshold)")
+    att_thresh = thresholds.get("attendance_threshold", ATTENDANCE_THRESHOLD)
+    pass_thresh = thresholds.get("pass_marks_threshold", PASS_MARKS_THRESHOLD)
 
-    if marks_pct < PASS_MARKS_THRESHOLD:
-        reasons.append(f"Average marks {marks_pct:.1f}% (below {PASS_MARKS_THRESHOLD:.0f}% pass mark)")
+    if att_pct < att_thresh:
+        reasons.append(f"Attendance {att_pct:.1f}% (below {att_thresh:.0f}% threshold)")
+
+    if marks_pct < pass_thresh:
+        reasons.append(f"Average marks {marks_pct:.1f}% (below {pass_thresh:.0f}% pass mark)")
 
     if arrears > 0:
         reasons.append(f"{arrears} active arrear{'s' if arrears != 1 else ''}")
@@ -249,6 +268,8 @@ async def performance_agent_node(state: AgentState, db: AsyncSession) -> dict:
     semester_filter: Optional[int] = None  # Could be extended to parse from intent
 
     # ── Gather Data ──────────────────────────────────────────────────────────
+    thresholds = await _load_thresholds(db)
+    
     try:
         students = await _gather_student_metrics(
             db,
@@ -278,12 +299,12 @@ async def performance_agent_node(state: AgentState, db: AsyncSession) -> dict:
     # ── Compute Risk Scores ──────────────────────────────────────────────────
     analyzed: list[dict] = []
     for s in students:
-        score = _compute_risk_score(s)
+        score = _compute_risk_score(s, thresholds)
         analyzed.append({
             **s,
             "risk_score": score,
             "risk_category": _risk_category(score),
-            "risk_explanation": _build_risk_explanation(s),
+            "risk_explanation": _build_risk_explanation(s, thresholds),
         })
 
     # Sort by risk (highest first)

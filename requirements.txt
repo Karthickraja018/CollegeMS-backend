@@ -47,3 +47,5 @@ email-validator>=2.0.0
 groq>=1.4.0
 fastmcp>=0.4.1
 mcp>=1.2.0
+apscheduler>=3.10.0
+slowapi>=0.1.9

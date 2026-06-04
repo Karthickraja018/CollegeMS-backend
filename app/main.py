@@ -28,7 +28,20 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.reports_dir, exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+    try:
+        from app.tasks.metrics_scheduler import start_scheduler
+        start_scheduler()
+    except Exception as e:
+        print(f"Failed to start scheduler: {e}")
+        
     yield
+    
+    try:
+        from app.tasks.metrics_scheduler import shutdown_scheduler
+        shutdown_scheduler()
+    except Exception as e:
+        print(f"Failed to shutdown scheduler: {e}")
 
 
 app = FastAPI(
@@ -37,6 +50,13 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.api.auth import limiter
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(

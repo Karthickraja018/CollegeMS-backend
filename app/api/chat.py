@@ -70,9 +70,30 @@ async def _event_stream(
     try:
         from app.database import AsyncSessionLocal
         
-        # Convert conversation history to LangGraph message format
+        from app.llm.provider_factory import get_llm_provider
+        
+        SUMMARIZE_THRESHOLD = 5
+        MAX_VERBATIM_TURNS = 5
+        
+        if len(history) > SUMMARIZE_THRESHOLD:
+            llm = get_llm_provider()
+            old_turns = history[:-MAX_VERBATIM_TURNS]
+            recent_turns = history[-MAX_VERBATIM_TURNS:]
+            
+            old_text = "\n".join([f"{t.get('role', 'user')}: {t.get('content', '')}" for t in old_turns])
+            try:
+                summary = await llm.generate(
+                    messages=[{"role": "user", "content": f"Summarize this conversation in 2-3 sentences:\n{old_text}"}],
+                    system_prompt="You are a conversation summarizer. Be brief and factual.",
+                    temperature=0.1
+                )
+            except Exception:
+                summary = "Previous context summarized."
+                
+            history = [{"role": "system", "content": f"[Previous conversation summary: {summary}]"}] + recent_turns
+
         lc_messages = []
-        for msg in history[-10:]:  # Limit context window to last 10 turns
+        for msg in history:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             lc_messages.append((role, content))
@@ -136,7 +157,7 @@ async def _event_stream(
                         current_state.update(output)
                         
                     # If this is any other top-level agent node or the whole graph
-                    elif name in ["query", "analytics", "performance", "report", "LangGraph"]:
+                    elif name in ["query", "analytics", "performance", "report", "visualization", "LangGraph"]:
                         current_state.update(output)
 
             # --- Persist to DB before closing ---

@@ -13,7 +13,7 @@ from .fee_account import FeeAccount
 from .fee_transaction import FeeTransaction
 from .placement_drive import PlacementDrive
 from .placement_application import PlacementApplication
-from .principal import InstitutionMetric, DepartmentMetric, StudentRiskScore, AccreditationMetric, ExecutiveInsight
+from .accreditation import AccreditationDocument
 from .performance import StaffPerformanceMetric, HodPerformanceMetric
 
 
@@ -33,11 +33,7 @@ __all__ = [
     "FeeTransaction",
     "PlacementDrive",
     "PlacementApplication",
-    "InstitutionMetric",
-    "DepartmentMetric",
-    "StudentRiskScore",
-    "AccreditationMetric",
-    "ExecutiveInsight",
+    "AccreditationDocument",
     "StaffPerformanceMetric",
     "HodPerformanceMetric"
 ]

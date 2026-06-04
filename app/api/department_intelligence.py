@@ -25,6 +25,7 @@ from app.api.deps import get_current_user, get_data_scope
 from app.access_policies import assert_department_access
 from app.models.user import User, UserRole
 from app.roles import DataScope
+from app.utils.academic_metrics import compute_ahs
 
 router = APIRouter(prefix="/department-intelligence", tags=["department-intelligence"])
 
@@ -69,28 +70,7 @@ async def _get_dept_ahs(db: AsyncSession, dept_id: int) -> dict:
     avg_marks = float(row[4] or 0)
     risk_ratio = at_risk / total
 
-    score = round(
-        avg_att * 0.30 + pass_rate * 0.30 + ((1 - risk_ratio) * 100) * 0.25 + avg_marks * 0.15,
-        1
-    )
-    score = min(100, max(0, score))
-
-    if score >= 85:
-        grade, color = "Excellent", "green"
-    elif score >= 70:
-        grade, color = "Good", "blue"
-    elif score >= 55:
-        grade, color = "Needs Attention", "amber"
-    else:
-        grade, color = "Critical", "red"
-
-    return {
-        "score": score, "grade": grade, "color": color,
-        "components": {
-            "attendance": avg_att, "pass_rate": pass_rate,
-            "risk_ratio": round(risk_ratio * 100, 1), "subject_avg": avg_marks,
-        },
-    }
+    return compute_ahs(avg_att, pass_rate, risk_ratio, avg_marks)
 
 
 @router.get("/")
@@ -234,6 +214,8 @@ async def get_subject_analysis(
 @router.get("/{dept_id}/faculty-performance")
 async def get_faculty_performance(
     dept_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
     scope: DataScope = Depends(get_data_scope),
     db: AsyncSession = Depends(get_db),
@@ -249,30 +231,40 @@ async def get_faculty_performance(
                 COUNT(DISTINCT fsa.subject_id) AS subjects_assigned,
                 COUNT(DISTINCT mr.student_id) AS students_taught,
                 ROUND(AVG(att.attendance_pct)::numeric, 1) AS avg_student_att,
-                ROUND((COUNT(*) FILTER (WHERE mr.percentage >= 50) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1) AS pass_rate
+                ROUND((COUNT(*) FILTER (WHERE mr.percentage >= 50) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1) AS pass_rate,
+                spm.attendance_submission_pct,
+                spm.marks_submission_pct
             FROM users u
             JOIN faculty_subject_assignments fsa ON fsa.user_id = u.id
             LEFT JOIN marks_records mr ON mr.subject_id = fsa.subject_id AND mr.is_absent = FALSE
             LEFT JOIN students s ON s.id = mr.student_id AND s.status = 'active'
+            LEFT JOIN LATERAL (
+                SELECT attendance_submission_pct, marks_submission_pct 
+                FROM staff_performance_metrics s2
+                WHERE s2.user_id = u.id
+                ORDER BY s2.month DESC
+                LIMIT 1
+            ) spm ON TRUE
             LEFT JOIN (
                 SELECT student_id, AVG(attendance_pct) AS attendance_pct
                 FROM attendance_summary
                 GROUP BY student_id
             ) att ON att.student_id = s.id
             WHERE u.department_id = :dept_id AND u.role IN ('faculty', 'hod') AND u.is_active = TRUE
-            GROUP BY u.id, u.full_name, u.research_output_score, u.feedback_score
+            GROUP BY u.id, u.full_name, u.research_output_score, u.feedback_score, spm.attendance_submission_pct, spm.marks_submission_pct
             ORDER BY pass_rate DESC NULLS LAST
+            LIMIT :limit OFFSET :offset
         """),
-        {"dept_id": dept_id},
+        {"dept_id": dept_id, "limit": limit, "offset": offset},
     )
     rows = r.fetchall()
     cols = list(r.keys())
     faculty_list = [dict(zip(cols, row)) for row in rows]
     
-    # Calculate a mock compliance score (usually derived from attendance submission delays)
-    import random
     for f in faculty_list:
-        f["compliance_score"] = random.randint(85, 100)
+        att_sub = float(f.get("attendance_submission_pct") or 0)
+        marks_sub = float(f.get("marks_submission_pct") or 0)
+        f["compliance_score"] = round((att_sub + marks_sub) / 2, 1) if (att_sub or marks_sub) else None
         
     return {"faculty": faculty_list}
 
@@ -364,7 +356,8 @@ async def compare_departments(
                 ROUND(AVG(att.attendance_pct)::numeric, 1) AS avg_att,
                 ROUND((COUNT(*) FILTER (WHERE mr.percentage >= 50) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1) AS pass_rate,
                 COUNT(*) FILTER (WHERE s.risk_score >= 60) AS at_risk,
-                COUNT(DISTINCT u.id) AS faculty_count
+                COUNT(DISTINCT u.id) AS faculty_count,
+                ROUND(AVG(mr.percentage)::numeric, 1) AS avg_marks
             FROM departments d
             LEFT JOIN students s ON s.department_id = d.id AND s.status = 'active'
             LEFT JOIN (
@@ -385,12 +378,12 @@ async def compare_departments(
 
     # Add AHS for each dept
     for dept in depts:
-        dept_id = dept["id"]
         total = dept["students"] or 1
         risk_ratio = (dept["at_risk"] or 0) / total
         att = float(dept["avg_att"] or 0)
         pass_r = float(dept["pass_rate"] or 0)
-        dept["ahs"] = round(att * 0.30 + pass_r * 0.30 + ((1 - risk_ratio) * 100) * 0.25 + pass_r * 0.15, 1)
+        avg_marks = float(dept["avg_marks"] or 0)
+        dept["ahs"] = compute_ahs(att, pass_r, risk_ratio, avg_marks)["score"]
 
     return {"departments": depts}
 
@@ -409,9 +402,18 @@ async def get_faculty_profile(
     r = await db.execute(
         text("""
             SELECT u.id, u.full_name, u.employee_id, u.role, u.designation,
-                   d.name as dept_name
+                   d.name as dept_name,
+                   spm.attendance_submission_pct,
+                   spm.marks_submission_pct
             FROM users u
             JOIN departments d ON d.id = u.department_id
+            LEFT JOIN LATERAL (
+                SELECT attendance_submission_pct, marks_submission_pct 
+                FROM staff_performance_metrics s2
+                WHERE s2.user_id = u.id
+                ORDER BY s2.month DESC
+                LIMIT 1
+            ) spm ON TRUE
             WHERE u.id = :faculty_id AND u.department_id = :dept_id
         """),
         {"faculty_id": faculty_id, "dept_id": dept_id}
@@ -420,12 +422,9 @@ async def get_faculty_profile(
     if not faculty_row:
         raise HTTPException(status_code=404, detail="Faculty not found in this department")
     
-    faculty = dict(zip(r.keys(), faculty_row))
-    
-    # Mock compliance score for now, matching get_faculty_performance behavior
-    import random
-    random.seed(faculty_id) # deterministic mock for consistent UI
-    faculty["compliance_score"] = random.randint(70, 100)
+    att_sub = float(faculty.get("attendance_submission_pct") or 0)
+    marks_sub = float(faculty.get("marks_submission_pct") or 0)
+    faculty["compliance_score"] = round((att_sub + marks_sub) / 2, 1) if (att_sub or marks_sub) else None
 
     # 2. Subject Performance (Marks and pass rate for subjects taught by this faculty)
     r = await db.execute(

@@ -23,7 +23,7 @@ Endpoints:
   [NEW] Underperforming Students by Staff
   GET /api/principal/departments/{dept_id}/underperforming
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
@@ -65,11 +65,25 @@ async def get_principal_dashboard(
     row = r.fetchone()
     faculty_r = await db.execute(text("SELECT COUNT(*) FROM users WHERE role IN ('faculty', 'hod') AND is_active = TRUE"))
     faculty_count = faculty_r.scalar() or 0
+    
+    placement_r = await db.execute(text("""
+        SELECT ROUND((COUNT(DISTINCT student_id) FILTER (WHERE status = 'selected') * 100.0 / NULLIF(COUNT(DISTINCT student_id), 0))::numeric, 1)
+        FROM placement_applications
+    """))
+    placement_rate = placement_r.scalar() or 0
+    
+    fee_r = await db.execute(text("""
+        SELECT ROUND((SUM(paid_amount) * 100.0 / NULLIF(SUM(total_amount), 0))::numeric, 1)
+        FROM fee_accounts
+    """))
+    fee_collection_rate = fee_r.scalar() or 0
+
     return {
         "academic_health": 0,
         "attendance": float(row[0] or 0) if row else 0,
         "pass_rate": float(row[1] or 0) if row else 0,
-        "placement_rate": 0,
+        "placement_rate": float(placement_rate),
+        "fee_collection_rate": float(fee_collection_rate),
         "risk_students": int(row[3] or 0) if row else 0,
         "faculty_count": faculty_count
     }
@@ -80,8 +94,39 @@ async def get_executive_summary(
     current_user: User = Depends(get_principal),
     db: AsyncSession = Depends(get_db)
 ):
+    r = await db.execute(text("""
+        SELECT
+            ROUND(AVG(att.attendance_pct)::numeric, 1) AS avg_attendance,
+            ROUND((COUNT(*) FILTER (WHERE mr.percentage >= 50) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1) AS pass_rate
+        FROM students s
+        LEFT JOIN (
+            SELECT student_id, AVG(attendance_pct) AS attendance_pct
+            FROM attendance_summary GROUP BY student_id
+        ) att ON att.student_id = s.id
+        LEFT JOIN marks_records mr ON mr.student_id = s.id AND mr.is_absent = FALSE
+        WHERE s.status = 'active'
+    """))
+    row = r.fetchone()
+    att = float(row[0] or 0) if row else 0
+    pass_r = float(row[1] or 0) if row else 0
+    
+    r2 = await db.execute(text("""
+        SELECT d.name
+        FROM departments d
+        LEFT JOIN students s ON s.department_id = d.id AND s.status = 'active'
+        LEFT JOIN marks_records mr ON mr.student_id = s.id AND mr.is_absent = FALSE
+        WHERE d.is_active = TRUE
+        GROUP BY d.id, d.name
+        ORDER BY (COUNT(*) FILTER (WHERE mr.percentage >= 50) * 100.0 / NULLIF(COUNT(*), 0)) ASC NULLS LAST
+        LIMIT 1
+    """))
+    worst_dept_row = r2.fetchone()
+    worst_dept = worst_dept_row[0] if worst_dept_row else "some departments"
+    
+    summary = f"Institution performance remains stable with an average attendance of {att}% and a pass rate of {pass_r}%. However, {worst_dept} requires attention due to lower performance metrics."
+    
     return {
-        "summary": "Institution performance remains stable. CSE department leads in attendance, but ECE requires attention due to a recent dip in pass rates. NBA documentation is 91% complete."
+        "summary": summary
     }
 
 
@@ -97,7 +142,8 @@ async def get_departments(
             ROUND(AVG(att.attendance_pct)::numeric, 1) AS avg_attendance,
             ROUND((COUNT(*) FILTER (WHERE mr.percentage >= 50) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1) AS pass_rate,
             COUNT(DISTINCT s.id) FILTER (WHERE s.risk_score >= 60) AS risk_students,
-            COUNT(DISTINCT u.id) AS faculty_count
+            COUNT(DISTINCT u.id) AS faculty_count,
+            ROUND(AVG(mr.percentage)::numeric, 1) AS avg_marks
         FROM departments d
         LEFT JOIN students s ON s.department_id = d.id AND s.status = 'active'
         LEFT JOIN (
@@ -112,12 +158,14 @@ async def get_departments(
     """))
     rows = r.fetchall()
     result = []
+    from app.utils.academic_metrics import compute_ahs
     for row in rows:
         total = row[3] or 1
         risk = row[6] or 0
         att = float(row[4] or 0)
         pass_r = float(row[5] or 0)
-        health = round(att * 0.40 + pass_r * 0.40 + ((1 - risk/total) * 100) * 0.20, 1)
+        avg_marks = float(row[8] or 0)
+        health = compute_ahs(att, pass_r, risk/total, avg_marks)["score"]
         result.append({
             "department_id": row[0],
             "department": row[1],
@@ -134,6 +182,8 @@ async def get_departments(
 
 @router.get("/risk-students")
 async def get_risk_students(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(get_principal),
     db: AsyncSession = Depends(get_db)
 ):
@@ -155,8 +205,8 @@ async def get_risk_students(
         ) att ON att.student_id = s.id
         WHERE s.status = 'active' AND s.risk_score >= 60
         ORDER BY s.risk_score DESC
-        LIMIT 20
-    """))
+        LIMIT :limit OFFSET :offset
+    """), {"limit": limit, "offset": offset})
     rows = r.fetchall()
     cols = list(r.keys())
     return [dict(zip(cols, row)) for row in rows]
@@ -219,10 +269,23 @@ async def get_accreditation(
     naac_readiness = min(100, round(avg_att * 0.40 + pass_rate * 0.40 + risk_ratio * 100 * 0.20))
     nba_readiness = min(100, round(avg_att * 0.35 + pass_rate * 0.50 + risk_ratio * 100 * 0.15))
 
+    doc_r = await db.execute(text("""
+        SELECT 
+            COUNT(*) AS total_docs, 
+            COUNT(*) FILTER (WHERE is_uploaded = TRUE) AS uploaded_docs
+        FROM accreditation_documents
+        WHERE college_id = :college_id AND is_required = TRUE
+    """), {"college_id": current_user.college_id})
+    doc_row = doc_r.fetchone()
+    if doc_row and doc_row[0] > 0:
+        documentation = min(100, round((doc_row[1] / doc_row[0]) * 100))
+    else:
+        documentation = 0
+
     return {
         "nba_readiness": nba_readiness,
         "naac_readiness": naac_readiness,
-        "documentation": 76
+        "documentation": documentation
     }
 
 
@@ -243,13 +306,51 @@ async def generate_recommendations(
     current_user: User = Depends(get_principal),
     db: AsyncSession = Depends(get_db)
 ):
-    return {
-        "recommendations": [
-            "Schedule an attendance review meeting with ECE HOD.",
-            "Accelerate NBA criteria 3 documentation for CSE.",
-            "Review critical risk students in MECH department."
-        ]
-    }
+    recs = []
+    r1 = await db.execute(text("""
+        SELECT d.name, d.code, ROUND((COUNT(*) FILTER (WHERE mr.percentage >= 50) * 100.0 / NULLIF(COUNT(*), 0))::numeric, 1) AS pass_rate
+        FROM departments d
+        JOIN students s ON s.department_id = d.id AND s.status = 'active'
+        JOIN marks_records mr ON mr.student_id = s.id AND mr.is_absent = FALSE
+        WHERE d.is_active = TRUE
+        GROUP BY d.id, d.name, d.code
+        ORDER BY pass_rate ASC NULLS LAST
+        LIMIT 1
+    """))
+    worst_dept = r1.fetchone()
+    if worst_dept and worst_dept[2] and worst_dept[2] < 50:
+        recs.append(f"Schedule a performance review meeting with {worst_dept[1]} HOD (Pass rate: {worst_dept[2]}%).")
+        
+    r2 = await db.execute(text("""
+        SELECT d.name, COUNT(*) AS risk_count
+        FROM students s
+        JOIN departments d ON d.id = s.department_id
+        WHERE s.risk_score >= 80 AND s.status = 'active'
+        GROUP BY d.id, d.name
+        ORDER BY risk_count DESC
+        LIMIT 1
+    """))
+    risk_dept = r2.fetchone()
+    if risk_dept and risk_dept[1] > 0:
+        recs.append(f"Review {risk_dept[1]} department. It has {risk_dept[1]} critical risk students.")
+        
+    r3 = await db.execute(text("""
+        SELECT COUNT(*) 
+        FROM users u
+        LEFT JOIN LATERAL (
+            SELECT attendance_submission_pct FROM staff_performance_metrics s2 WHERE s2.user_id = u.id ORDER BY s2.month DESC LIMIT 1
+        ) spm ON TRUE
+        WHERE u.role IN ('faculty', 'hod') AND u.is_active = TRUE
+        AND (spm.attendance_submission_pct IS NULL OR spm.attendance_submission_pct < 80)
+    """))
+    non_compliant = r3.scalar() or 0
+    if non_compliant > 0:
+        recs.append(f"There are {non_compliant} faculty members with low attendance submission compliance.")
+        
+    if not recs:
+        recs.append("All metrics are healthy. No immediate action required.")
+        
+    return {"recommendations": recs}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -258,6 +359,8 @@ async def generate_recommendations(
 
 @router.get("/faculty")
 async def list_faculty(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(get_principal),
     db: AsyncSession = Depends(get_db)
 ):
@@ -305,7 +408,8 @@ async def list_faculty(
                  spm.student_pass_rate, spm.avg_student_attendance, spm.feedback_score,
                  spm.classes_conducted, spm.ai_usage_count, spm.report_count, spm.month
         ORDER BY d.name, u.full_name
-    """))
+        LIMIT :limit OFFSET :offset
+    """), {"limit": limit, "offset": offset})
     rows = r.fetchall()
     cols = list(r.keys())
     faculty_list = []
@@ -570,6 +674,8 @@ async def get_faculty_profile(
 
 @router.get("/hod")
 async def list_hods(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(get_principal),
     db: AsyncSession = Depends(get_db)
 ):
@@ -603,7 +709,8 @@ async def list_hods(
         ) hpm ON TRUE
         WHERE u.role = 'hod' AND u.is_active = TRUE AND u.department_id IS NOT NULL
         ORDER BY hpm.dept_health_score DESC NULLS LAST
-    """))
+        LIMIT :limit OFFSET :offset
+    """), {"limit": limit, "offset": offset})
     rows = r.fetchall()
     cols = list(r.keys())
     hods = []

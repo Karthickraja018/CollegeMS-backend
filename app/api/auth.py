@@ -1,9 +1,13 @@
 """
 Auth routes: login, register, refresh, me.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 
 from app.database import get_db
 from app.models.user import User, UserRole
@@ -16,7 +20,8 @@ from app.services.auth_service import (
     get_user_by_email,
     get_user_by_id,
 )
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, bearer_scheme
+from fastapi.security import HTTPAuthorizationCredentials
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -46,7 +51,8 @@ class RefreshRequest(BaseModel):
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/minute")
+async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)):
     user = await authenticate_user(db, body.email, body.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
@@ -125,3 +131,29 @@ async def get_me(current_user: User = Depends(get_current_user)):
         "department_id": current_user.department_id,
         "is_active": current_user.is_active,
     }
+
+
+@router.delete("/logout")
+async def logout(
+    current_user: User = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db)
+):
+    from app.models.auth import RevokedToken
+    from datetime import datetime
+    
+    token = credentials.credentials
+    try:
+        payload = decode_token(token)
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        
+        if jti and exp:
+            expires_at = datetime.utcfromtimestamp(exp)
+            revoked = RevokedToken(jti=jti, expires_at=expires_at)
+            db.add(revoked)
+            await db.commit()
+    except Exception:
+        pass
+        
+    return {"message": "Logged out successfully"}

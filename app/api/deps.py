@@ -27,12 +27,24 @@ async def get_current_user(
     try:
         payload = decode_token(token)
         user_id = int(payload.get("sub"))
+        jti = payload.get("jti")
     except (JWTError, ValueError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+        
+    if jti:
+        from app.models.auth import RevokedToken
+        from sqlalchemy import select
+        result = await db.execute(select(RevokedToken).where(RevokedToken.jti == jti))
+        if result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     user = await get_user_by_id(db, user_id)
     if not user or not user.is_active:

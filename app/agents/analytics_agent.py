@@ -78,72 +78,45 @@ def _compute_basic_kpis(data: list[dict]) -> dict:
     return kpis
 
 
-def _generate_fallback_analytics(
-    query: str, data: list[dict], intent: dict
-) -> dict:
+def _is_numeric(val: str) -> bool:
+    try:
+        float(val)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+def _generate_fallback_analytics(query: str, data: list[dict], intent: dict) -> dict:
     """Generate a basic analytics result without LLM when the call fails."""
-    departments = intent.get("entities", {}).get("departments", [])
-    metrics = intent.get("entities", {}).get("metrics", [])
-    query_type = intent.get("query_type", "descriptive")
+    if not data:
+        return {
+            "kpis": {}, "comparisons": [], "insights": ["No data available"], 
+            "recommendations": [], "summary": "No data available", "alerts": []
+        }
 
-    kpis = _compute_basic_kpis(data)
-
-    comparisons = []
-    if query_type == "comparative" and len(departments) >= 2:
-        # Try to extract department comparison from data
-        dept_data: dict[str, dict] = {}
-        for row in data:
-            dept_name = (
-                row.get("department")
-                or row.get("dept")
-                or row.get("department_name")
-                or ""
-            )
-            if dept_name:
-                dept_data[dept_name] = row
-
-        dept_names = list(dept_data.keys())
-        if len(dept_names) >= 2:
-            for metric in metrics or list(kpis.keys())[:1]:
-                field = metric.replace("_pct", "_pct").replace("_", "_")
-                # Try several field name variants
-                for variant in [field, metric, metric.replace("_pct", ""), "avg_" + field]:
-                    vals = {d: dept_data[d].get(variant) for d in dept_names if dept_data[d].get(variant) is not None}
-                    if len(vals) >= 2:
-                        d_list = list(vals.items())
-                        a_name, a_val = d_list[0]
-                        b_name, b_val = d_list[1]
-                        try:
-                            comparisons.append({
-                                "group_a": a_name,
-                                "group_b": b_name,
-                                "metric": metric,
-                                "a_value": round(float(a_val), 2),
-                                "b_value": round(float(b_val), 2),
-                                "difference": round(abs(float(a_val) - float(b_val)), 2),
-                                "winner": a_name if float(a_val) > float(b_val) else b_name,
-                            })
-                        except (TypeError, ValueError):
-                            pass
-                        break
-
+    kpis = {}
+    for key, val in data[0].items():
+        if isinstance(val, (int, float)) or (isinstance(val, str) and _is_numeric(val)):
+            values = [float(row[key]) for row in data if row.get(key) is not None and _is_numeric(row[key])]
+            if values:
+                kpis[key] = {
+                    "avg": round(sum(values) / len(values), 2),
+                    "min": round(min(values), 2),
+                    "max": round(max(values), 2),
+                    "count": len(values)
+                }
+    
     insights = []
-    if comparisons:
-        comp = comparisons[0]
-        insights.append(
-            f"{comp['winner']} has higher {comp['metric'].replace('_', ' ')} "
-            f"({comp['a_value'] if comp['winner'] == comp['group_a'] else comp['b_value']:.1f}%) "
-            f"compared to the other department ({comp['difference']:.1f}% difference)."
-        )
-
+    for field, stats in kpis.items():
+        insights.append(f"{field}: avg={stats['avg']}, range=[{stats['min']}, {stats['max']}]")
+    
     if not insights and data:
         insights.append(f"Retrieved {len(data)} records for analysis.")
 
     return {
         "kpis": kpis,
-        "comparisons": comparisons,
+        "comparisons": [],
         "summary": f"Analysis of {len(data)} data points.",
-        "insights": insights,
+        "insights": insights[:4],
         "recommendations": [],
         "alerts": [],
     }

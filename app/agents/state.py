@@ -30,6 +30,7 @@ class AgentState(TypedDict):
 
     # ── Structured results from agents ─────────────────────────────────────
     sql_result: list[dict]
+    sql_query: Optional[str]
     analytics_result: Optional[dict]
     chart_spec: Optional[dict]
     report_url: Optional[str]

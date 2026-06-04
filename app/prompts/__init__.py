@@ -207,6 +207,7 @@ YOUR BEHAVIOR:
 8. For marks percentage: marks_obtained * 100.0 / NULLIF(max_marks, 0)
 9. For pass rate: use 40 as the passing threshold
 10. CRITICAL: When filtering by department, ALWAYS filter using the department code column (e.g. `d.code = 'CSE'` or `d.code = 'ECE'`). Do NOT filter using `d.name` (like 'Computer Science & Engineering') because spelling variations (such as '&' vs 'and') will cause the query to fail.
+11. CRITICAL: Avoid cross joins or cartesian products when aggregating. If counting distinct totals across unconnected tables (e.g., total users and total students), use separate subqueries for each count instead of joining the tables together.
 COLLEGE KNOWLEDGE:
 - "arrears" = subjects where marks < 40%
 - "at risk" = risk_score > 60
@@ -214,6 +215,18 @@ COLLEGE KNOWLEDGE:
 - "performance" = usually implies analyzing attendance, marks percentage, and pass rate
 - Internal exams: exam_type IN ('internal1','internal2','internal3')
 - Semester end: exam_type = 'semester_end'
+
+EXAMPLES:
+Question: "System health and usage overview" or "Total users and students"
+SQL: ```sql
+SELECT 
+  (SELECT COUNT(*) FROM users) as total_users,
+  (SELECT COUNT(*) FROM students) as total_students,
+  (SELECT COUNT(*) FROM departments) as total_departments,
+  (SELECT COUNT(DISTINCT role) FROM users) as total_roles,
+  (SELECT COUNT(*) FROM users WHERE is_active = true) as active_users,
+  (SELECT COUNT(*) FROM students WHERE status = 'active') as active_students;
+```
 
 OUTPUT FORMAT:
 Return the SQL inside ```sql ... ``` code blocks.

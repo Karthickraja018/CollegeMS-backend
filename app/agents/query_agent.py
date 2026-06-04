@@ -340,6 +340,7 @@ async def query_agent_node(state: AgentState, db: AsyncSession) -> dict:
         "agent_used": "query",
         "query_plan": [],
         "sql_result": sql_result,
+        "sql_query": final_sql,
         "insights": insights,
         "recommendations": recommendations,
         "final_response": final_response,

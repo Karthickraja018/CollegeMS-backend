@@ -174,6 +174,8 @@ async def _event_stream(
                             "rows": sql_res[:100],
                             "row_count": len(sql_res)
                         }
+                    if current_state.get("sql_query"):
+                        assistant_msg["sql"] = current_state.get("sql_query")
                     if current_state.get("report_url"):
                         assistant_msg["reportUrl"] = current_state.get("report_url")
                     if current_state.get("risk_analysis"):
@@ -226,6 +228,11 @@ async def _event_stream(
         query_plan = result.get("query_plan", [])
         if query_plan:
             yield f"data: {safe_json_dumps({'type': 'query_plan', 'steps': query_plan})}\n\n"
+            
+        # ── Emit: sql query ──────────────────────────────────────────────────
+        sql_query = result.get("sql_query")
+        if sql_query:
+            yield f"data: {safe_json_dumps({'type': 'sql_query', 'sql': sql_query})}\n\n"
 
         # ── Emit: final response (streamed token by token) ───────────────────
         final_response = result.get("final_response", "")

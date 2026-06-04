@@ -48,19 +48,19 @@ async def ai_stats(
 
     risk_stats_res = await db.execute(text("""
         SELECT
-            COUNT(DISTINCT student_id)                          AS students_scanned,
-            COUNT(DISTINCT student_id)
-                FILTER (WHERE risk_score >= 80)                  AS critical,
-            COUNT(DISTINCT student_id)
-                FILTER (WHERE risk_score >= 60 AND risk_score < 80) AS high,
-            COUNT(DISTINCT student_id)
-                FILTER (WHERE risk_score >= 40 AND risk_score < 60) AS medium,
-            MAX(snapshot_date)                                  AS last_scan_date
+            COUNT(DISTINCT ars.student_id)                          AS students_scanned,
+            COUNT(DISTINCT ars.student_id)
+                FILTER (WHERE ars.risk_score >= 80)                  AS critical,
+            COUNT(DISTINCT ars.student_id)
+                FILTER (WHERE ars.risk_score >= 60 AND ars.risk_score < 80) AS high,
+            COUNT(DISTINCT ars.student_id)
+                FILTER (WHERE ars.risk_score >= 40 AND ars.risk_score < 60) AS medium,
+            MAX(ars.snapshot_date)                                  AS last_scan_date
         FROM at_risk_snapshots ars
         JOIN students st ON st.id = ars.student_id
         JOIN departments d ON d.id = st.department_id
         WHERE d.college_id = :college_id
-          AND snapshot_date = (SELECT MAX(snapshot_date) FROM at_risk_snapshots)
+          AND ars.snapshot_date = (SELECT MAX(snapshot_date) FROM at_risk_snapshots)
     """), {"college_id": college_id})
     risk_stats = risk_stats_res.fetchone()
 
